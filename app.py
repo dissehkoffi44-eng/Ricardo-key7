@@ -11,7 +11,7 @@ import gc
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION & CSS ---
-st.set_page_config(page_title="KEY ULTIMATE HARMONIC 2", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="KEY ULTIMATE 7", page_icon="🎧", layout="wide")
 
 st.markdown("""
     <style>
@@ -210,7 +210,7 @@ def get_full_analysis(file_bytes, file_name):
     }
 
 # --- INTERFACE ---
-st.markdown("<h1 style='text-align: center;'>🎧 KEY ULTIMATE HARMONIC 2</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>🎧 KEY ULTIMATE 7</h1>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ MAINTENANCE")
