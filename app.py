@@ -93,14 +93,13 @@ def detect_sequential_cadence(df_tl, chroma_avg):
             idx_f = NOTES_LIST.index(root_f)
             idx_t = NOTES_LIST.index(root_t)
 
-            # Cas 1: Si Majeur (B maj) -> Mi mineur (E min)
-            # Cas 2: La Majeur (A maj) -> Ré mineur (D min)
-            # Logique : Accord de départ est MAJEUR, accord d'arrivée est MINEUR, écart de 7 semitons (Quinte)
+            # Logique : Accord de départ est MAJEUR (Dominante), accord d'arrivée est MINEUR (Tonique)
+            # Écart de 7 semitons (Quinte juste : Sol -> Do, ou Si -> Mi)
             if mode_f == 'major' and mode_t == 'minor':
                 if idx_f == (idx_t + 7) % 12:
-                    # On vérifie la présence de la note sensible dans l'audio global pour confirmer
+                    # Vérification de la sensible (note juste en dessous de la tonique)
                     sensible_idx = (idx_t - 1) % 12
-                    if chroma_avg[sensible_idx] > 0.18: # Forte présence de la sensible
+                    if chroma_avg[sensible_idx] > 0.18: 
                         return True, n_to
         except: continue
     return False, None
@@ -224,11 +223,13 @@ def get_full_analysis(file_bytes, file_name):
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
+    # Décision de base entre stabilité temporelle et cohérence globale
     final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
     
-    # Priorité absolue à la cadence si détectée
+    # PRIORITÉ ABSOLUE : Si une cadence parfaite V-i est trouvée, elle l'emporte
     if is_cad: final_decision = cad_key
 
+    # Correction finale par les tonalités relatives (ex: choix du mineur préférentiel)
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
@@ -238,6 +239,7 @@ def get_full_analysis(file_bytes, file_name):
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if final_conf > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
     tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
     
+    # Génération du graphique pour Telegram
     fig_tg = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark")
     fig_tg.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
     plot_img = fig_tg.to_image(format="png", width=800, height=400)
@@ -324,6 +326,7 @@ with tabs[0]:
                 with st.expander(f"📊 {res['file_name']}", expanded=True):
                     st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE DU GRAPHIQUE: {res["note_solide"]} ({res["solid_conf"]}% de confiance)</div>', unsafe_allow_html=True)
+                    
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
                     with c2: get_sine_witness(res["recommended"]["note"], fid)
