@@ -77,18 +77,26 @@ def validate_coherence(chroma_avg, proposed_key):
         return np.corrcoef(chroma_avg, theoretical_profile)[0, 1]
     except: return 0
 
-def detect_bidirectional_cadence(n1, n2, chroma_avg):
-    """Détecte la relation Tonique/Dominante et choisit la plus cohérente."""
-    try:
-        root1, root2 = n1.split()[0], n2.split()[0]
-        idx1, idx2 = NOTES_LIST.index(root1), NOTES_LIST.index(root2)
-        s1 = validate_coherence(chroma_avg, n1)
-        s2 = validate_coherence(chroma_avg, n2)
-        # Si n2 est la quinte de n1 ou inversement
-        if (idx1 + 7) % 12 == idx2: return True, (n1 if s1 >= (s2 - 0.05) else n2)
-        if (idx2 + 7) % 12 == idx1: return True, (n2 if s2 >= (s1 - 0.05) else n1)
-        return False, n1
-    except: return False, n1
+def detect_sequential_cadence(df_tl, chroma_avg):
+    """Analyse les transitions réelles entre segments pour détecter V -> I (Dominante vers Tonique)"""
+    if len(df_tl) < 5: return False, None
+    transitions = []
+    notes = df_tl['Note'].tolist()
+    for i in range(len(notes)-1):
+        transitions.append((notes[i], notes[i+1]))
+    
+    # On cherche le mouvement harmonique le plus fréquent
+    most_common = Counter(transitions).most_common(3)
+    for (n_from, n_to), count in most_common:
+        try:
+            idx_from = NOTES_LIST.index(n_from.split()[0])
+            idx_to = NOTES_LIST.index(n_to.split()[0])
+            # La quinte (Dominante) est à +7 demi-tons de la Tonique
+            if idx_from == (idx_to + 7) % 12:
+                score_res = validate_coherence(chroma_avg, n_to)
+                if score_res > 0.45: return True, n_to
+        except: continue
+    return False, None
 
 def detect_relative_key(n1, n2):
     try:
@@ -177,16 +185,16 @@ def get_full_analysis(file_bytes, file_name):
                 if score > b_score: b_score, b_key = score, f"{NOTES_LIST[i]} {mode}"
         return b_key, b_score, avg
 
-    # 3. ANALYSE GLOBALE MULTI-VOTE
+    # 3. ANALYSE GLOBALE MULTI-VOTE (CENS + CQT)
     chroma_cens_gl = librosa.feature.chroma_cens(y=y_harm, sr=sr)
-    key_cens, score_cens, avg_cens = solve_key(chroma_cens_gl)
+    key_cens, _, avg_cens = solve_key(chroma_cens_gl)
     chroma_cqt_gl = librosa.feature.chroma_cqt(y=y_harm, sr=sr)
-    key_cqt, score_cqt, avg_cqt = solve_key(chroma_cqt_gl)
+    key_cqt, _, avg_cqt = solve_key(chroma_cqt_gl)
     
     n1_global = Counter([key_cens, key_cqt]).most_common(1)[0][0]
     chroma_global_avg = (avg_cens + avg_cqt) / 2
 
-    # 4. TIMELINE ET STABILITÉ PONDÉRÉE
+    # 4. TIMELINE ET ANALYSE DE STABILITÉ
     step, timeline_data = 6, []
     weighted_scores = Counter()
     for start_t in range(0, int(duration) - step, step):
@@ -203,21 +211,25 @@ def get_full_analysis(file_bytes, file_name):
     note_solide = df_fiable['Note'].mode()[0] if not df_fiable.empty else df_tl['Note'].mode()[0]
     occ_graph = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100 if not df_fiable.empty else 0
 
-    # 5. ARBITRAGE FINAL EXPERT (Cadences, Relatives, Cohérence)
+    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE (MAJ M3 PRO)
+    # Règle 1: Détection de la Cadence Réelle (V -> I)
+    is_cad, cad_key = detect_sequential_cadence(df_tl, chroma_global_avg)
+    
+    # Règle 2: Choix entre Note Stable (Timeline) et Note Globale (Spectre complet)
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
-    # Choix de base
-    final_decision = note_solide if (occ_graph > 35 or score_solide > (score_glob - 0.03)) else n1_global
+    # Arbitrage principal
+    final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
     
-    # Correction par Clé Relative
+    # Règle 3: Si une cadence forte est détectée, elle prime sur l'arbitrage
+    if is_cad:
+        final_decision = cad_key
+
+    # Règle 4: Vérification des Relatives (Tranchage Mineur/Majeur)
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
-    
-    # Correction par Cadence Bidirectionnelle (Tonique vs Dominante)
-    is_cad, cad_root = detect_bidirectional_cadence(final_decision, n1_global, chroma_global_avg)
-    if is_cad: final_decision = cad_root
 
     # 6. RÉSULTATS ET GRAPHIQUES
     final_conf = int(validate_coherence(chroma_global_avg, final_decision) * 100)
@@ -231,7 +243,7 @@ def get_full_analysis(file_bytes, file_name):
     res = {
         "file_name": file_name, "tempo": int(float(tempo)),
         "recommended": {"note": final_decision, "conf": final_conf, "bg": bg},
-        "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
+        "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()) if not df_tl.empty else 0,
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
         "duration": duration, "plot_img": plot_img, "tuning": round(tuning, 2),
         "intro_type": intro_type, "votes": {"CENS": key_cens, "CQT": key_cqt}
@@ -244,7 +256,7 @@ st.title("🎧 RCDJ228 Mkey M3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
-    st.info("Moteur : HSS + Cadence Bidirectionnelle + Arbitrage Expert")
+    st.info("Moteur : HSS + Cadence Séquentielle + Arbitrage Expert")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
         st.session_state.order_list = []
@@ -264,7 +276,7 @@ with tabs[0]:
         for index, f in enumerate(files):
             fid = f"{f.name}_{f.size}"
             if fid not in st.session_state.processed_files:
-                progress_text.text(f"⏳ Analyse Harmonique Profonde : {f.name}...")
+                progress_text.text(f"⏳ Analyse Harmonique M3 PRO : {f.name}...")
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
                 if res:
@@ -280,8 +292,8 @@ with tabs[0]:
                         f"🎯 *Fiabilité :* `{res['recommended']['conf']}%`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"🔗 *Analyse Structurelle :*\n"
-                        f"🔹 Cadence I-V : `{'✅ Oui' if res['is_cadence'] else '❌ Non'}`\n"
-                        f"🔹 Relative : `{'✅ Détectée' if res['is_relative'] else '❌ Non'}`\n"
+                        f"🔹 Cadence V-I : `{'✅ Détectée' if res['is_cadence'] else '❌ Non'}`\n"
+                        f"🔹 Relative : `{'✅ Corrigée' if res['is_relative'] else '❌ Non'}`\n"
                         f"🔹 Intro : `{res['intro_type']}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"🎧 *RCDJ228 Hkey 3 PRO*"
@@ -304,10 +316,10 @@ with tabs[0]:
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
                     with c2: get_sine_witness(res["recommended"]["note"], fid)
                     with c3: st.markdown(f'<div class="metric-container">TUNING<br><div class="value-custom">{res["tuning"]} Hz</div></div>', unsafe_allow_html=True)
-                    with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
+                    with c4: st.markdown(f'<div class="metric-container">CADENCE V-I<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
                     
                     df_plot = pd.DataFrame(res['timeline'])
-                    fig = px.line(df_plot, x="Temps", y="Note", template="plotly_dark", title="Stabilité Harmonique (Timeline)")
+                    fig = px.line(df_plot, x="Temps", y="Note", template="plotly_dark", title="Stabilité Harmonique (Moteur M3)")
                     fig.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
                     st.plotly_chart(fig, use_container_width=True)
 
