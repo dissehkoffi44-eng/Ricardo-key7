@@ -85,7 +85,6 @@ def detect_sequential_cadence(df_tl, chroma_avg):
     for i in range(len(notes)-1):
         transitions.append((notes[i], notes[i+1]))
     
-    # On cherche le mouvement harmonique le plus fréquent
     most_common = Counter(transitions).most_common(3)
     for (n_from, n_to), count in most_common:
         try:
@@ -211,22 +210,20 @@ def get_full_analysis(file_bytes, file_name):
     note_solide = df_fiable['Note'].mode()[0] if not df_fiable.empty else df_tl['Note'].mode()[0]
     occ_graph = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100 if not df_fiable.empty else 0
 
-    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE (MAJ M3 PRO)
-    # Règle 1: Détection de la Cadence Réelle (V -> I)
+    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE (Poids Cadence V-I Boosté)
     is_cad, cad_key = detect_sequential_cadence(df_tl, chroma_global_avg)
     
-    # Règle 2: Choix entre Note Stable (Timeline) et Note Globale (Spectre complet)
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
-    # Arbitrage principal
+    # Étape A: Initialisation avec l'arbitrage stabilité vs global
     final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
     
-    # Règle 3: Si une cadence forte est détectée, elle prime sur l'arbitrage
+    # Étape B: PRIORITÉ ABSOLUE À LA CADENCE (Si détectée, elle écrase les autres votes)
     if is_cad:
         final_decision = cad_key
 
-    # Règle 4: Vérification des Relatives (Tranchage Mineur/Majeur)
+    # Étape C: Correction des relatives (Majeur vs Mineur relatif)
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
@@ -256,7 +253,7 @@ st.title("🎧 RCDJ228 Mkey M3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
-    st.info("Moteur : HSS + Cadence Séquentielle + Arbitrage Expert")
+    st.info("Moteur : HSS + Cadence Séquentielle (Prioritaire) + Arbitrage Expert")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
         st.session_state.order_list = []
@@ -292,7 +289,7 @@ with tabs[0]:
                         f"🎯 *Fiabilité :* `{res['recommended']['conf']}%`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"🔗 *Analyse Structurelle :*\n"
-                        f"🔹 Cadence V-I : `{'✅ Détectée' if res['is_cadence'] else '❌ Non'}`\n"
+                        f"🔹 Cadence V-I : `{'✅ Prioritaire' if res['is_cadence'] else '❌ Non'}`\n"
                         f"🔹 Relative : `{'✅ Corrigée' if res['is_relative'] else '❌ Non'}`\n"
                         f"🔹 Intro : `{res['intro_type']}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -316,7 +313,7 @@ with tabs[0]:
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
                     with c2: get_sine_witness(res["recommended"]["note"], fid)
                     with c3: st.markdown(f'<div class="metric-container">TUNING<br><div class="value-custom">{res["tuning"]} Hz</div></div>', unsafe_allow_html=True)
-                    with c4: st.markdown(f'<div class="metric-container">CADENCE V-I<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
+                    with c4: st.markdown(f'<div class="metric-container">CADENCE V-I<br><div class="value-custom">{"OUI (BOOST)" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
                     
                     df_plot = pd.DataFrame(res['timeline'])
                     fig = px.line(df_plot, x="Temps", y="Note", template="plotly_dark", title="Stabilité Harmonique (Moteur M3)")
