@@ -298,7 +298,7 @@ with tabs[0]:
             res = st.session_state.processed_files.get(fid)
             if res:
                 with st.expander(f"📊 {res['file_name']}", expanded=True):
-                    st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf']}%</h2></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE DU GRAPHIQUE: {res["note_solide"]} ({res["solid_conf"]}% de confiance)</div>', unsafe_allow_html=True)
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
