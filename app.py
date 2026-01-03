@@ -6,8 +6,8 @@ import plotly.express as px
 from collections import Counter
 import io
 import streamlit.components.v1 as components
-import requests                                        
-import gc                                                
+import requests                                         
+import gc                                               
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION SÉCURISÉE & SECRETS ---
@@ -42,6 +42,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- CONSTANTES ---
+# Note : Mi mineur (E minor) = 9A, Fa# mineur (F# minor) = 11A, Ré mineur (D minor) = 7A
 BASE_CAMELOT_MINOR = {'Ab':'1A','G#':'1A','Eb':'2A','D#':'2A','Bb':'3A','A#':'3A','F':'4A','C':'5A','G':'6A','D':'7A','A':'8A','E':'9A','B':'10A','F#':'11A','Gb':'11A','Db':'12A','C#':'12A'}
 BASE_CAMELOT_MAJOR = {'B':'1B','F#':'2B','Gb':'2B','Db':'3B','C#':'3B','Ab':'4B','G#':'4B','Eb':'5B','D#':'5B','Bb':'6B','A#':'6B','F':'7B','C':'8B','G':'9B','D':'10B','A':'11B','E':'12B'}
 NOTES_LIST = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -78,20 +79,29 @@ def validate_coherence(chroma_avg, proposed_key):
     except: return 0
 
 def detect_sequential_cadence(df_tl, chroma_avg):
-    if len(df_tl) < 5: return False, None
-    transitions = []
+    """Détecte les résolutions harmoniques V -> i (Majeur vers mineur)"""
+    if len(df_tl) < 3: return False, None
+    
     notes = df_tl['Note'].tolist()
     for i in range(len(notes)-1):
-        transitions.append((notes[i], notes[i+1]))
-    
-    most_common = Counter(transitions).most_common(3)
-    for (n_from, n_to), count in most_common:
+        n_from, n_to = notes[i], notes[i+1]
         try:
-            idx_from = NOTES_LIST.index(n_from.split()[0])
-            idx_to = NOTES_LIST.index(n_to.split()[0])
-            if idx_from == (idx_to + 7) % 12:
-                score_res = validate_coherence(chroma_avg, n_to)
-                if score_res > 0.45: return True, n_to
+            parts_f, parts_t = n_from.split(), n_to.split()
+            root_f, mode_f = parts_f[0], parts_f[1].lower()
+            root_t, mode_t = parts_t[0], parts_t[1].lower()
+            
+            idx_f = NOTES_LIST.index(root_f)
+            idx_t = NOTES_LIST.index(root_t)
+
+            # Cas 1: Si Majeur (B maj) -> Mi mineur (E min)
+            # Cas 2: La Majeur (A maj) -> Ré mineur (D min)
+            # Logique : Accord de départ est MAJEUR, accord d'arrivée est MINEUR, écart de 7 semitons (Quinte)
+            if mode_f == 'major' and mode_t == 'minor':
+                if idx_f == (idx_t + 7) % 12:
+                    # On vérifie la présence de la note sensible dans l'audio global pour confirmer
+                    sensible_idx = (idx_t - 1) % 12
+                    if chroma_avg[sensible_idx] > 0.18: # Forte présence de la sensible
+                        return True, n_to
         except: continue
     return False, None
 
@@ -166,14 +176,12 @@ def get_full_analysis(file_bytes, file_name):
     tuning = librosa.estimate_tuning(y=y_filtered, sr=sr)
     duration = librosa.get_duration(y=y_raw, sr=sr)
 
-    # 2. DÉTECTION TYPE INTRO & MÉTRIQUES SUPPLÉMENTAIRES
+    # 2. DÉTECTION TYPE INTRO
     intro_dur = min(15, duration * 0.15)
     y_intro = y_harm[:int(intro_dur * sr)]
     intro_chroma = librosa.feature.chroma_cens(y=y_intro, sr=sr)
     harmonic_intensity = np.mean(intro_chroma)
     intro_type = "🥁 Percussion" if harmonic_intensity < 0.15 else "🎹 Mélodique"
-    
-    # Calcul RMS (Énergie moyenne)
     energy_avg = np.mean(librosa.feature.rms(y=y_raw))
 
     def solve_key(chroma_feat):
@@ -211,19 +219,21 @@ def get_full_analysis(file_bytes, file_name):
     note_solide = df_fiable['Note'].mode()[0] if not df_fiable.empty else df_tl['Note'].mode()[0]
     occ_graph = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100 if not df_fiable.empty else 0
 
-    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE
+    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE (AVEC CADENCES V-i)
     is_cad, cad_key = detect_sequential_cadence(df_tl, chroma_global_avg)
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
     final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
+    
+    # Priorité absolue à la cadence si détectée
     if is_cad: final_decision = cad_key
 
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
 
-    # 6. RÉSULTATS
+    # 6. RÉSULTATS FINAUX
     final_conf = int(validate_coherence(chroma_global_avg, final_decision) * 100)
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if final_conf > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
     tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
@@ -249,7 +259,7 @@ st.title("🎧 RCDJ228 Mkey M3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
-    st.info("Moteur : HSS + Cadence Séquentielle (Prioritaire) + Arbitrage Expert")
+    st.info("Moteur : HSS + Cadence Harmonique Harmonisée (V-i) + Arbitrage Expert")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
         st.session_state.order_list = []
@@ -273,9 +283,8 @@ with tabs[0]:
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
                 if res:
-                    # --- RAPPORT TELEGRAM ULTRA DÉTAILLÉ ---
+                    # RAPPORT TELEGRAM
                     conf_bar = "🟢" * (res['recommended']['conf'] // 10) + "⚪" * (10 - (res['recommended']['conf'] // 10))
-                    
                     tg_cap = (
                         f"🚀 *RAPPORT D'ANALYSE EXPERT M3 PRO*\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -291,18 +300,11 @@ with tabs[0]:
                         f"{conf_bar}\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📡 *MOTEUR D'ARBITRAGE :*\n"
-                        f"🔸 *Cadence V-I :* `{'✅ DÉTECTÉE (Boostée)' if res['is_cadence'] else '❌ Non détectée'}`\n"
+                        f"🔸 *Cadence V-i :* `{'✅ DÉTECTÉE (Accords Dominants)' if res['is_cadence'] else '❌ Non détectée'}`\n"
                         f"🔸 *Correction Relative :* `{'✅ Appliquée' if res['is_relative'] else '❌ Aucune'}`\n"
-                        f"🔸 *Stabilité Graphe :* `{res['note_solide']} ({res['solid_conf']}%)`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📊 *DONNÉES TECHNIQUES :*\n"
-                        f"🔹 *Tuning :* `{res['tuning']} Hz`\n"
-                        f"🔹 *Énergie :* `{res['energy']}`\n"
-                        f"🔹 *Votes :* `CENS:{res['votes']['CENS']} | CQT:{res['votes']['CQT']}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"🎧 *RCDJ228 Hkey M3 PRO Engine*"
                     )
-                    
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
                     del res["plot_img"]
                     st.session_state.processed_files[fid] = res
@@ -321,7 +323,7 @@ with tabs[0]:
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
                     with c2: get_sine_witness(res["recommended"]["note"], fid)
                     with c3: st.markdown(f'<div class="metric-container">TUNING<br><div class="value-custom">{res["tuning"]} Hz</div></div>', unsafe_allow_html=True)
-                    with c4: st.markdown(f'<div class="metric-container">CADENCE V-I<br><div class="value-custom">{"OUI (BOOST)" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
+                    with c4: st.markdown(f'<div class="metric-container">CADENCE V-i<br><div class="value-custom">{"OUI (BOOST)" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
                     
                     df_plot = pd.DataFrame(res['timeline'])
                     fig = px.line(df_plot, x="Temps", y="Note", template="plotly_dark", title="Stabilité Harmonique (Moteur M3)")
