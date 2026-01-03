@@ -6,8 +6,8 @@ import plotly.express as px
 from collections import Counter
 import io
 import streamlit.components.v1 as components
-import requests                                         
-import gc                                               
+import requests                                        
+import gc                                                
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION SÉCURISÉE & SECRETS ---
@@ -78,7 +78,6 @@ def validate_coherence(chroma_avg, proposed_key):
     except: return 0
 
 def detect_sequential_cadence(df_tl, chroma_avg):
-    """Analyse les transitions réelles entre segments pour détecter V -> I (Dominante vers Tonique)"""
     if len(df_tl) < 5: return False, None
     transitions = []
     notes = df_tl['Note'].tolist()
@@ -90,7 +89,6 @@ def detect_sequential_cadence(df_tl, chroma_avg):
         try:
             idx_from = NOTES_LIST.index(n_from.split()[0])
             idx_to = NOTES_LIST.index(n_to.split()[0])
-            # La quinte (Dominante) est à +7 demi-tons de la Tonique
             if idx_from == (idx_to + 7) % 12:
                 score_res = validate_coherence(chroma_avg, n_to)
                 if score_res > 0.45: return True, n_to
@@ -168,12 +166,15 @@ def get_full_analysis(file_bytes, file_name):
     tuning = librosa.estimate_tuning(y=y_filtered, sr=sr)
     duration = librosa.get_duration(y=y_raw, sr=sr)
 
-    # 2. DÉTECTION TYPE INTRO
+    # 2. DÉTECTION TYPE INTRO & MÉTRIQUES SUPPLÉMENTAIRES
     intro_dur = min(15, duration * 0.15)
     y_intro = y_harm[:int(intro_dur * sr)]
     intro_chroma = librosa.feature.chroma_cens(y=y_intro, sr=sr)
     harmonic_intensity = np.mean(intro_chroma)
     intro_type = "🥁 Percussion" if harmonic_intensity < 0.15 else "🎹 Mélodique"
+    
+    # Calcul RMS (Énergie moyenne)
+    energy_avg = np.mean(librosa.feature.rms(y=y_raw))
 
     def solve_key(chroma_feat):
         avg = np.mean(chroma_feat, axis=1)
@@ -184,7 +185,7 @@ def get_full_analysis(file_bytes, file_name):
                 if score > b_score: b_score, b_key = score, f"{NOTES_LIST[i]} {mode}"
         return b_key, b_score, avg
 
-    # 3. ANALYSE GLOBALE MULTI-VOTE (CENS + CQT)
+    # 3. ANALYSE GLOBALE MULTI-VOTE
     chroma_cens_gl = librosa.feature.chroma_cens(y=y_harm, sr=sr)
     key_cens, _, avg_cens = solve_key(chroma_cens_gl)
     chroma_cqt_gl = librosa.feature.chroma_cqt(y=y_harm, sr=sr)
@@ -210,25 +211,19 @@ def get_full_analysis(file_bytes, file_name):
     note_solide = df_fiable['Note'].mode()[0] if not df_fiable.empty else df_tl['Note'].mode()[0]
     occ_graph = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100 if not df_fiable.empty else 0
 
-    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE (Poids Cadence V-I Boosté)
+    # 5. ARBITRAGE EXPERT HIÉRARCHIQUE
     is_cad, cad_key = detect_sequential_cadence(df_tl, chroma_global_avg)
-    
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
-    # Étape A: Initialisation avec l'arbitrage stabilité vs global
     final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
-    
-    # Étape B: PRIORITÉ ABSOLUE À LA CADENCE (Si détectée, elle écrase les autres votes)
-    if is_cad:
-        final_decision = cad_key
+    if is_cad: final_decision = cad_key
 
-    # Étape C: Correction des relatives (Majeur vs Mineur relatif)
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
 
-    # 6. RÉSULTATS ET GRAPHIQUES
+    # 6. RÉSULTATS
     final_conf = int(validate_coherence(chroma_global_avg, final_decision) * 100)
     bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if final_conf > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
     tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
@@ -243,7 +238,8 @@ def get_full_analysis(file_bytes, file_name):
         "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()) if not df_tl.empty else 0,
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
         "duration": duration, "plot_img": plot_img, "tuning": round(tuning, 2),
-        "intro_type": intro_type, "votes": {"CENS": key_cens, "CQT": key_cqt}
+        "intro_type": intro_type, "votes": {"CENS": key_cens, "CQT": key_cqt},
+        "energy": round(energy_avg, 4)
     }
     del y_raw, y_harm, y_filtered; gc.collect()
     return res
@@ -277,24 +273,36 @@ with tabs[0]:
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
                 if res:
+                    # --- RAPPORT TELEGRAM ULTRA DÉTAILLÉ ---
+                    conf_bar = "🟢" * (res['recommended']['conf'] // 10) + "⚪" * (10 - (res['recommended']['conf'] // 10))
+                    
                     tg_cap = (
-                        f"🚀 *ANALYSE EXPERT TERMINÉE*\n"
+                        f"🚀 *RAPPORT D'ANALYSE EXPERT M3 PRO*\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📁 *Fichier :* `{res['file_name']}`\n"
-                        f"⏱ *Durée :* `{int(res['duration'])}s` | 🥁 *BPM :* `{res['tempo']}`\n"
+                        f"📁 *FICHIER :* `{res['file_name']}`\n"
+                        f"⏱ *DURÉE :* `{int(res['duration'] // 60)}m {int(res['duration'] % 60)}s`\n"
+                        f"🥁 *TEMPO :* `{res['tempo']} BPM`\n"
+                        f"🎹 *INTRO :* `{res['intro_type']}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💎 *DÉCISION FINALE*\n"
-                        f"🎹 *Clé :* `{res['recommended']['note'].upper()}`\n"
-                        f"🎼 *Camelot :* `{get_camelot_pro(res['recommended']['note'])}`\n"
-                        f"🎯 *Fiabilité :* `{res['recommended']['conf']}%`\n"
+                        f"💎 *DÉCISION HARMONIQUE*\n"
+                        f"主 *CLÉ FINALE :* `{res['recommended']['note'].upper()}`\n"
+                        f"🧭 *CAMELOT :* `{get_camelot_pro(res['recommended']['note'])}`\n"
+                        f"🎯 *FIABILITÉ :* `{res['recommended']['conf']}%`\n"
+                        f"{conf_bar}\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔗 *Analyse Structurelle :*\n"
-                        f"🔹 Cadence V-I : `{'✅ Prioritaire' if res['is_cadence'] else '❌ Non'}`\n"
-                        f"🔹 Relative : `{'✅ Corrigée' if res['is_relative'] else '❌ Non'}`\n"
-                        f"🔹 Intro : `{res['intro_type']}`\n"
+                        f"📡 *MOTEUR D'ARBITRAGE :*\n"
+                        f"🔸 *Cadence V-I :* `{'✅ DÉTECTÉE (Boostée)' if res['is_cadence'] else '❌ Non détectée'}`\n"
+                        f"🔸 *Correction Relative :* `{'✅ Appliquée' if res['is_relative'] else '❌ Aucune'}`\n"
+                        f"🔸 *Stabilité Graphe :* `{res['note_solide']} ({res['solid_conf']}%)`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🎧 *RCDJ228 Hkey 3 PRO*"
+                        f"📊 *DONNÉES TECHNIQUES :*\n"
+                        f"🔹 *Tuning :* `{res['tuning']} Hz`\n"
+                        f"🔹 *Énergie :* `{res['energy']}`\n"
+                        f"🔹 *Votes :* `CENS:{res['votes']['CENS']} | CQT:{res['votes']['CQT']}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🎧 *RCDJ228 Hkey M3 PRO Engine*"
                     )
+                    
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
                     del res["plot_img"]
                     st.session_state.processed_files[fid] = res
