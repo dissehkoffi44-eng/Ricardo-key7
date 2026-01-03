@@ -15,7 +15,7 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "7751365982:AAFLbeRoPsDx5OyIOl
 CHAT_ID = st.secrets.get("CHAT_ID", "-1003602454394")
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="RCDJ228 key M3 PRO", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="RCDJ228 key7 PRO", page_icon="🎧", layout="wide")
 
 # --- STYLES CSS ---
 st.markdown("""
@@ -255,7 +255,7 @@ def get_full_analysis(file_bytes, file_name):
     return res
 
 # --- INTERFACE STREAMLIT ---
-st.title("🎧 RCDJ228 Mkey M3 PRO")
+st.title("🎧 RCDJ228 key7 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
