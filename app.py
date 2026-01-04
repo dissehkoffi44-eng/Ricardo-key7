@@ -78,7 +78,6 @@ def validate_coherence(chroma_avg, proposed_key):
     except: return 0
 
 def detect_final_chord(y_harm, sr):
-    """Analyse la fin du signal harmonique pour trouver le point de repos final."""
     try:
         duration = librosa.get_duration(y=y_harm, sr=sr)
         end_zone_start = max(0, duration - 10)
@@ -233,6 +232,10 @@ def get_full_analysis(file_bytes, file_name):
 
     df_tl = pd.DataFrame(timeline_data)
     df_fiable = df_tl[(df_tl['Confiance'] > 65) & (df_tl['RMS'] > 0.01)]
+    
+    # Extraire le TOP 3 des notes dominantes pour le verrou de sécurité
+    top_3_notes = [item[0] for item in weighted_scores.most_common(3)]
+    
     note_solide = df_fiable['Note'].mode()[0] if not df_fiable.empty else df_tl['Note'].mode()[0]
     occ_graph = (len(df_fiable[df_fiable['Note'] == note_solide]) / len(df_fiable)) * 100 if not df_fiable.empty else 0
 
@@ -243,19 +246,21 @@ def get_full_analysis(file_bytes, file_name):
     score_solide = validate_coherence(chroma_global_avg, note_solide)
     score_glob = validate_coherence(chroma_global_avg, n1_global)
     
-    # Décision de base (Stabilité vs Globalité)
+    # 1. Décision de base (Stabilité vs Globalité)
     final_decision = note_solide if (occ_graph > 40 or score_solide > (score_glob - 0.02)) else n1_global
     
-    # BOOST POINT DE REPOS (Si la fin est très claire, elle prime sur l'hésitation I/V)
+    # 2. VERROU DE SÉCURITÉ : BOOST POINT DE REPOS
+    # On n'applique l'accord de fin que s'il est cohérent avec le reste du morceau (Top 3 notes)
     resolution_applied = False
     if final_chord_conf > 0.75:
-        final_decision = final_chord_key
-        resolution_applied = True
+        if final_chord_key in top_3_notes:
+            final_decision = final_chord_key
+            resolution_applied = True
     
-    # PRIORITÉ ABSOLUE CADENCE
+    # 3. PRIORITÉ ABSOLUE CADENCE (Même si hors top 3, car c'est un événement structurel)
     if is_cad: final_decision = cad_key
 
-    # Correction finale Relatifs
+    # 4. Correction finale Relatifs
     n2_alt = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1_global
     is_rel, rel_pref = detect_relative_key(final_decision, n2_alt)
     if is_rel: final_decision = rel_pref
@@ -286,7 +291,7 @@ st.title("🎧 RCDJ228 key7 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
-    st.info("Moteur : HSS + Resolution Harm. (End-Point) + Cadence V-i + Arbitrage")
+    st.info("Moteur : HSS + Resolution Harm. (Secured) + Cadence V-i + Arbitrage")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
         st.session_state.order_list = []
@@ -326,7 +331,7 @@ with tabs[0]:
                         f"{conf_bar}\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📡 *MOTEURS D'ARBITRAGE :*\n"
-                        f"🔹 *Point Repos Final :* `{'✅ Confirmé ('+res['final_chord_val']+')' if res['is_resolution'] else '❌ Indéterminé'}`\n"
+                        f"🔹 *Point Repos Final :* `{'✅ Confirmé ('+res['final_chord_val']+')' if res['is_resolution'] else '❌ Rejeté/Indéterminé'}`\n"
                         f"🔹 *Cadence V-i :* `{'✅ DÉTECTÉE' if res['is_cadence'] else '❌ Non'}`\n"
                         f"🔹 *Note Dominante :* `{res['note_solide']}`\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -345,7 +350,7 @@ with tabs[0]:
             if res:
                 with st.expander(f"📊 {res['file_name']}", expanded=True):
                     st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="solid-note-box">💎 ANALYSE FINALE : {res["final_chord_val"] if res["is_resolution"] else "Stabilité temporelle privilégiée"}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="solid-note-box">💎 ANALYSE FINALE : {res["final_chord_val"] if res["is_resolution"] else "Stabilité temporelle privilégiée (Accord de fin ignoré ou non-dominant)"}</div>', unsafe_allow_html=True)
                     
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
