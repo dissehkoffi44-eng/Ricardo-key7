@@ -21,7 +21,7 @@ if os.path.exists(r'C:\ffmpeg\bin'):
     os.environ["PATH"] += os.pathsep + r'C:\ffmpeg\bin'
 
 # --- CONFIGURATION SYSTÈME ---
-st.set_page_config(page_title="RCDJ228 SNIPER M3", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="RCDJ228 MUSIC SNIPER", page_icon="🎯", layout="wide")
 
 # Récupération des secrets
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN")
@@ -194,7 +194,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             fig_rd = go.Figure(data=go.Scatterpolar(r=res_obj['chroma'], theta=NOTES_LIST, fill='toself', line_color='#10b981'))
             fig_rd.update_layout(template="plotly_dark", polar=dict(radialaxis=dict(visible=False)))
             img_rd = fig_rd.to_image(format="png", width=600, height=600)
-            caption = (f" 🎯 *SNIPER M3 - RAPPORT*\n━━━━━━━━━━━━\n"
+            caption = (f" 🎯 *RCDJ228 MUSIC SNIPER - RAPPORT*\n━━━━━━━━━━━━\n"
                        f" 📂 *FICHIER:* `{file_name}`\n"
                        f" 🎵 *TONALITÉ:* `{final_key.upper()}`\n"
                        f" 🧭 *CAMELOT:* `{res_obj['camelot']}`\n"
@@ -229,7 +229,7 @@ def get_chord_js(btn_id, key_str):
     }}; """
 
 # --- INTERFACE PRINCIPALE ---
-st.title("🎯 RCDJ228 SNIPER M3")
+st.title("🎯 RCDJ228 MUSIC SNIPER")
 
 uploaded_files = st.file_uploader("📂 Déposez vos fichiers audio", type=['mp3','wav','flac','m4a'], accept_multiple_files=True)
 
