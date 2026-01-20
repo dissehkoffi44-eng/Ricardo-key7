@@ -1,4 +1,4 @@
-# RCDJ228 SNIPER M3 - VERSION FINALE CORRIGÉE
+# RCDJ228 SNIPER M3 - VERSION FUSIONNÉE (MOTEUR CODE 2 + ROBUSTESSE CODE 1)
 import streamlit as st
 import librosa
 import numpy as np
@@ -141,24 +141,27 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_filt = apply_sniper_filters(y, sr)
 
-    step, timeline, votes = 2, [], Counter()
-    segments = list(range(0, max(1, int(duration) - step), 1))
+    # --- CHANGEMENT ICI : PARAMÈTRES DU CODE 2 ---
+    step, timeline, votes = 6, [], Counter()
+    segments = list(range(0, max(1, int(duration) - step), 2)) # On scanne toutes les 2s
     total_segments = len(segments)
     
     for idx, start in enumerate(segments):
         if _progress_callback:
             prog_internal = int((idx / total_segments) * 100)
-            _progress_callback(prog_internal, f"Scan harmonique : {start}s / {int(duration)}s")
+            _progress_callback(prog_internal, f"Scan chirurgical : {start}s / {int(duration)}s")
 
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
         if len(seg) < 1000 or np.max(np.abs(seg)) < 0.01: continue
+        
         c_raw = librosa.feature.chroma_cqt(y=seg, sr=sr, tuning=tuning, n_chroma=24, bins_per_octave=24)
         c_avg = np.mean((c_raw[::2, :] + c_raw[1::2, :]) / 2, axis=1)
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
-        if res['score'] < 0.7: 
-            continue
+        
+        if res['score'] < 0.7: continue
+        
         weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
