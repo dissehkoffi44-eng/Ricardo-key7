@@ -161,7 +161,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         
         if res['score'] < 0.6: continue
         
-        weight = 4.0 if (start < 10 or start > (duration - 15)) else 1.0
+        weight = 4.0 if (start < 12 or start > (duration - 20)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
