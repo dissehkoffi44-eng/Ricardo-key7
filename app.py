@@ -105,7 +105,7 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.2 
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.35 
                 if bv[i] > 0.6: score += (bv[i] * 0.2)
                 fifth_idx = (i + 7) % 12
                 if cv[fifth_idx] > 0.5: score += 0.1
@@ -150,6 +150,16 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             prog_internal = int((idx / total_segments) * 100)
             _progress_callback(prog_internal, f"Scan chirurgical : {start}s / {int(duration)}s")
 
+        position = start / duration   # 0.0 → début, 1.0 → fin
+
+        # NOUVEAU : pondération plus forte au corps du morceau
+        if 0.20 <= position <= 0.80:          # le "corps" principal (80% central)
+            weight = 2.0
+        elif position < 0.15 or position > 0.85:
+            weight = 0.4                      # très faible pour intro/outro
+        else:
+            weight = 1.0                      # transition (pre-drop, post-drop, etc.)
+
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
         if len(seg) < 1000 or np.max(np.abs(seg)) < 0.01: continue
@@ -159,9 +169,9 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.75: continue
+        if res['score'] < 0.7: continue
         
-        weight = 3.0 if (start < 12 or start > (duration - 20)) else 1.0
+        # Ancien weight supprimé → remplacé par le weight positionnel ci-dessus
         votes[res['key']] += int(res['score'] * 100 * weight)
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
