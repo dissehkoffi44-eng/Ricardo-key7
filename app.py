@@ -150,16 +150,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             prog_internal = int((idx / total_segments) * 100)
             _progress_callback(prog_internal, f"Scan chirurgical : {start}s / {int(duration)}s")
 
-        position = start / duration   # 0.0 → début, 1.0 → fin
-
-        # NOUVEAU : pondération plus forte au corps du morceau
-        if 0.10 <= position <= 0.80:          # le "corps" principal (80% central)
-            weight = 3.0
-        elif position < 0.20 or position > 0.9:
-            weight = 1.4                      # très faible pour intro/outro
-        else:
-            weight = 1.0                      # transition (pre-drop, post-drop, etc.)
-
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
         if len(seg) < 1000 or np.max(np.abs(seg)) < 0.01: continue
@@ -169,9 +159,9 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.85: continue
+        if res['score'] < 0.7: continue
         
-        # Ancien weight supprimé → remplacé par le weight positionnel ci-dessus
+        weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
