@@ -1,4 +1,3 @@
-# RCDJ228 SNIPER M3 - VERSION FUSIONNÉE (MOTEUR CODE 2 + ROBUSTESSE CODE 1)
 import streamlit as st
 import librosa
 import numpy as np
@@ -95,62 +94,44 @@ def get_bass_priority(y, sr):
     chroma_bass = librosa.feature.chroma_cqt(y=y_bass, sr=sr, n_chroma=12)
     return np.mean(chroma_bass, axis=1)
 
-# ... (tout le début du code reste exactement le même : imports, config, CSS, références, etc.)
-
 def solve_key_sniper(chroma_vector, bass_vector):
     best_overall_score = -1
     best_key = "Unknown"
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
     bv = (bass_vector - bass_vector.min()) / (bass_vector.max() - bass_vector.min() + 1e-6)
-    
     for p_name, p_data in PROFILES.items():
         for mode in ["major", "minor"]:
             for i in range(12):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
 
-                # Renforcement de la tierce (bonus + malus croisé)
                 third_maj = (i + 4) % 12
                 third_min = (i + 3) % 12
 
                 if mode == "major":
-                    score += cv[third_maj] * 0.60          # bonus tierce majeure
-                    score -= cv[third_min] * 0.40          # malus si tierce mineure présente
-                else:  # minor
-                    score += cv[third_min] * 0.65          # bonus tierce mineure
-                    score -= cv[third_maj] * 0.45          # malus si tierce majeure présente
+                    score += cv[third_maj] * 0.60
+                    score -= cv[third_min] * 0.40
+                else:
+                    score += cv[third_min] * 0.65
+                    score -= cv[third_maj] * 0.45
 
-                # Pénalité forte si la tierce attendue est vraiment faible
+                # Ajout demandé : pénalité si la tierce attendue est vraiment faible
                 if mode == "major" and cv[third_maj] < 0.30:
-                    score *= 0.6                           # -40% si tierce majeure très faible
+                    score *= 0.6   # pénalité forte si tierce majeure vraiment faible
                 if mode == "minor" and cv[third_min] < 0.30:
-                    score *= 0.55                          # -45% si tierce mineure très faible
+                    score *= 0.55
 
-                # Reste des bonus existants (inchangés)
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: 
-                        score *= 1.35 
-                
-                if bv[i] > 0.6: 
-                    score += (bv[i] * 0.2)
-                
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.35 
+                if bv[i] > 0.6: score += (bv[i] * 0.2)
                 fifth_idx = (i + 7) % 12
-                if cv[fifth_idx] > 0.5: 
-                    score += 0.1
-                
+                if cv[fifth_idx] > 0.5: score += 0.1
                 third_idx = (i + 4) % 12 if mode == "major" else (i + 3) % 12
-                if cv[third_idx] > 0.5: 
-                    score += 0.1
-
-                # Mise à jour du meilleur candidat
+                if cv[third_idx] > 0.5: score += 0.1
                 if score > best_overall_score:
                     best_overall_score = score
                     best_key = f"{NOTES_LIST[i]} {mode}"
-
     return {"key": best_key, "score": best_overall_score}
-
-# ... (le reste du code reste 100 % identique : apply_sniper_filters, get_bass_priority,
-# process_audio_precision, get_chord_js, interface Streamlit, sidebar, etc.)
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     ext = file_name.split('.')[-1].lower()
