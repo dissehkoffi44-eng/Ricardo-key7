@@ -105,7 +105,7 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.35 
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.2 
                 if bv[i] > 0.6: score += (bv[i] * 0.2)
                 fifth_idx = (i + 7) % 12
                 if cv[fifth_idx] > 0.5: score += 0.1
@@ -159,7 +159,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.7: continue
+        if res['score'] < 0.8: continue
         
         weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
