@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 from scipy.signal import butter, lfilter
 from datetime import datetime
 from pydub import AudioSegment
+import wave  # Pour génération WAV
 
 # --- FORCE FFMEG PATH (WINDOWS FIX) ---
 if os.path.exists(r'C:\ffmpeg\bin'):
@@ -80,6 +81,11 @@ st.markdown("""
         padding: 12px; border-radius: 10px; border: 1px solid #f59e0b;
         margin: 10px 0; font-family: 'JetBrains Mono', monospace;
     }
+    .perception-alert {
+        background: rgba(59, 130, 246, 0.15); color: #60a5fa;
+        padding: 15px; border-radius: 15px; border: 1px solid #3b82f6;
+        margin-top: 20px; font-weight: bold; font-family: 'JetBrains Mono', monospace;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -132,7 +138,7 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 if cv[third_idx] > 0.5:
                     score += 0.1
                 
-                # NOUVEAU : bonus tonique explicite
+                # Bonus tonique explicite
                 if cv[i] > 0.55:
                     score += 0.25
                 
@@ -161,6 +167,108 @@ def solve_key_sniper(chroma_vector, bass_vector):
                     # mais on pourra afficher un warning dans l'UI
 
     return {"key": best_key, "score": best_overall_score}
+
+# Fonction pour générer un accord de piano simulé réaliste
+def generate_piano_chord_audio(key_str, sr=22050, duration=2.0):
+    root_note, mode = key_str.split()
+    # Fréquences de base pour notes (A4=440Hz)
+    notes_freq = {
+        'C': 261.63, 'C#': 277.18, 'D': 293.66, 'D#': 311.13, 'E': 329.63,
+        'F': 349.23, 'F#': 369.99, 'G': 392.00, 'G#': 415.30, 'A': 440.00,
+        'A#': 466.16, 'B': 493.88
+    }
+    
+    # Intervalles pour l'accord (sans octave pour simplicité)
+    if mode == 'major':
+        intervals = [0, 4, 7]  # tonique, tierce maj, quinte
+    else:
+        intervals = [0, 3, 7]  # tonique, tierce min, quinte
+    
+    # Génération des fréquences
+    root_freq = notes_freq[root_note]
+    freqs = [root_freq * (2 ** (i / 12)) for i in intervals]
+    
+    # Temps
+    t = np.linspace(0, duration, int(sr * duration), False)
+    
+    # Enveloppe ADSR simple pour piano-like (Attack, Decay, Sustain, Release)
+    attack = 0.01
+    decay = 0.2
+    sustain = 0.6
+    release = duration - (attack + decay)
+    
+    env = np.zeros_like(t)
+    atk_end = int(attack * sr)
+    dec_end = int((attack + decay) * sr)
+    rel_start = int((duration - release) * sr)
+    
+    env[:atk_end] = np.linspace(0, 1, atk_end)
+    env[atk_end:dec_end] = np.linspace(1, sustain, dec_end - atk_end)
+    env[dec_end:rel_start] = sustain
+    env[rel_start:] = np.linspace(sustain, 0, len(env) - rel_start)
+    
+    # Génération du son avec harmoniques pour réalisme (piano-like)
+    y = np.zeros_like(t)
+    for f in freqs:
+        # Fundamental + 4 harmoniques décroissantes
+        for harm in range(1, 6):  # Augmenté à 5 pour plus de richesse
+            amp = 1.0 / harm  # Amplitude diminue avec harmonique
+            y += amp * np.sin(2 * np.pi * f * harm * t)
+    
+    y *= env  # Appliquer enveloppe
+    y = 0.5 * y / np.abs(y).max()  # Normaliser
+    
+    # Convertir en int16
+    y_int = (y * 32767).astype(np.int16)
+    
+    # Sauvegarder en BytesIO WAV
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(y_int.tobytes())
+    
+    buf.seek(0)
+    return buf.read(), y  # Retourner bytes + signal audio brut pour analyse perceptuelle
+
+# NOUVEAU : Simulation de la perception auditive humaine (consonance + similarité)
+def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
+    """
+    Simule l'oreille : Calcule un score de 'consonance perçue' et similarité.
+    - Roughness (simplifiée) : Somme des battements entre fréquences (modèle basique Plomp-Levelt).
+    - Similarité chroma : Corrélation entre chroma de l'accord et du morceau.
+    Score haut = "sonne bien" (consonant et similaire).
+    """
+    # 1. Extraire fréquences dominantes de l'accord (via STFT)
+    stft_chord = np.abs(librosa.stft(chord_y))
+    freqs = librosa.fft_frequencies(sr=sr)
+    mag = np.mean(stft_chord, axis=1)  # Magnitude moyenne
+    
+    # Sélectionner pics fréquentiels (top 10 pour simplicité)
+    peak_idxs = np.argsort(mag)[-10:]
+    chord_freqs = freqs[peak_idxs]
+    
+    # 2. Calculer roughness (dissonance perçue) : Somme des battements
+    roughness = 0.0
+    for i in range(len(chord_freqs)):
+        for j in range(i+1, len(chord_freqs)):
+            df = abs(chord_freqs[i] - chord_freqs[j])
+            if 20 < df < 200:  # Battements perceptibles dans 20-200 Hz
+                roughness += (mag[peak_idxs[i]] * mag[peak_idxs[j]]) * (df / 200) ** 2  # Formule simplifiée Plomp-Levelt
+    
+    consonance = 1 / (1 + roughness + 1e-6)  # Inverser pour consonance (0-1)
+    
+    # 3. Chroma de l'accord
+    chroma_chord = librosa.feature.chroma_stft(y=chord_y, sr=sr)
+    chroma_chord_avg = np.mean(chroma_chord, axis=1)
+    
+    # 4. Similarité avec le chroma du morceau
+    similarity = np.corrcoef(chroma_song, chroma_chord_avg)[0, 1]
+    
+    # Score total perceptif (pondéré : 60% similarité, 40% consonance)
+    perceptual_score = 0.6 * similarity + 0.4 * consonance
+    return perceptual_score
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     ext = file_name.split('.')[-1].lower()
@@ -222,6 +330,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     
     # Détection d'ambiguïté F <-> Ab (ou autres à 4 demi-tons)
     ambiguous = False
+    ambiguous_key = None
     if len(most_common) >= 2:
         n1 = most_common[0][0].split()[0]
         n2 = most_common[1][0].split()[0]
@@ -230,9 +339,42 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         dist = min(abs(idx1 - idx2), 12 - abs(idx1 - idx2))
         if dist == 4 and most_common[1][1] / most_common[0][1] > 0.75:
             ambiguous = True
+            ambiguous_key = most_common[1][0]
 
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, tuning=tuning), axis=1)
+
+    # NOUVEAU : Simulation perceptuelle pour vérification/choix
+    candidates = [final_key]  # Candidat principal
+    if ambiguous and ambiguous_key:
+        candidates.append(ambiguous_key)  # Ajouter l'ambigu
+    # Ajouter la relative (ex: si major → minor, et vice-versa)
+    rel_mode = 'minor' if 'major' in final_key else 'major'
+    rel_key = final_key.replace('major', 'minor') if 'major' in final_key else final_key.replace('minor', 'major')
+    rel_idx = (NOTES_LIST.index(final_key.split()[0]) - 3) % 12 if rel_mode == 'major' else (NOTES_LIST.index(final_key.split()[0]) + 3) % 12
+    rel_key = f"{NOTES_LIST[rel_idx]} {rel_mode}"
+    candidates.append(rel_key)
+    candidates = list(set(candidates))  # Uniques
+
+    best_perceptual_score = -1
+    best_key = final_key
+    best_audio_bytes = None
+    perception_adjusted = False
+
+    for cand_key in candidates:
+        audio_bytes, chord_y = generate_piano_chord_audio(cand_key, sr=sr)
+        perceptual_score = simulate_ear_perception(chord_y, y_filt, sr, chroma_avg)
+        if perceptual_score > best_perceptual_score:
+            best_perceptual_score = perceptual_score
+            best_key = cand_key
+            best_audio_bytes = audio_bytes
+            if cand_key != final_key:
+                perception_adjusted = True
+
+    # Mise à jour si ajusté par perception
+    if perception_adjusted:
+        final_key = best_key
+        final_conf = min(final_conf, 90)  # Baisser un peu la conf si ajusté
 
     res_obj = {
         "key": final_key,
@@ -246,10 +388,12 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "target_key": target_key,
         "target_camelot": CAMELOT_MAP.get(target_key, "??") if target_key else None,
         "name": file_name,
-        "ambiguous": ambiguous  # nouveau flag pour l'UI
+        "ambiguous": ambiguous,  # nouveau flag pour l'UI
+        "audio_bytes": best_audio_bytes,  # Bytes pour st.audio
+        "perception_adjusted": perception_adjusted  # Flag pour UI
     }
 
-    # Envoi Telegram (inchangé)
+    # Envoi Telegram (avec info perception)
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
             df_tl = pd.DataFrame(timeline)
@@ -266,7 +410,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
                        f" 🥁 *TEMPO:* `{res_obj['tempo']} BPM`\n"
                        f" 🎸 *ACCORD:* `{res_obj['tuning']} Hz`\n"
                        f"{' ⚠️ *MODULATION:* ' + target_key.upper() if mod_detected else ' ✅ *STABILITÉ:* OK'}\n"
-                       f"{' ⚠️ *AMBIGUÏTÉ POSSIBLE (4 demi-tons)*' if ambiguous else ''}\n━━━━━━━━━━━━")
+                       f"{' ⚠️ *AMBIGUÏTÉ POSSIBLE (4 demi-tons)*' if ambiguous else ''}\n"
+                       f"{' 👂 *AJUSTÉ PAR PERCEPTION AUDITIVE*' if perception_adjusted else ''}\n━━━━━━━━━━━━")
             files = {'p1': ('timeline.png', img_tl, 'image/png'), 'p2': ('radar.png', img_rd, 'image/png')}
             media = [{'type': 'photo', 'media': 'attach://p1', 'caption': caption, 'parse_mode': 'Markdown'}, {'type': 'photo', 'media': 'attach://p2'}]
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup", data={'chat_id': CHAT_ID, 'media': json.dumps(media)}, files=files, timeout=15)
@@ -336,6 +481,7 @@ if uploaded_files:
                         <p style="font-size:1.5em; opacity:0.9;">CAMELOT: <b>{data['camelot']}</b> | CONFIANCE: <b>{data['conf']}%</b></p>
                         {f"<div class='modulation-alert'>⚠️ MODULATION DÉTECTÉE : {data['target_key'].upper()} ({data['target_camelot']})</div>" if data['modulation'] else ""}
                         {f"<div class='warning-ambiguous'>⚠️ AMBIGUÏTÉ POSSIBLE (peut-être tonalité à 4 demi-tons)</div>" if data.get('ambiguous', False) else ""}
+                        {f"<div class='perception-alert'>👂 AJUSTÉ PAR SIMULATION PERCEPTIVE</div>" if data.get('perception_adjusted', False) else ""}
                     </div> """, unsafe_allow_html=True)
                 
                 m1, m2, m3 = st.columns(3)
@@ -345,8 +491,12 @@ if uploaded_files:
                     st.markdown(f"<div class='metric-box'><b>ACCORDAGE</b><br><span style='font-size:2em; color:#58a6ff;'>{data['tuning']}</span><br>Hz</div>", unsafe_allow_html=True)
                 with m3:
                     btn_id = f"play_{i}_{hash(data['name'])}"
-                    components.html(f"""<button id="{btn_id}" style="width:100%; height:95px; background:linear-gradient(45deg, #4F46E5, #7C3AED); color:white; border:none; border-radius:15px; cursor:pointer; font-weight:bold;">🎹 TESTER L'ACCORD</button>
+                    components.html(f"""<button id="{btn_id}" style="width:100%; height:95px; background:linear-gradient(45deg, #4F46E5, #7C3AED); color:white; border:none; border-radius:15px; cursor:pointer; font-weight:bold;">🎹 TESTER L'ACCORD SIMPLE</button>
                                     <script>{get_chord_js(btn_id, data['key'])}</script>""", height=110)
+
+                # Lecteur audio pour accord piano réaliste (vérification finale)
+                st.markdown("<div style='text-align:center; margin-top:10px; font-weight:bold; color:#10b981;'>🎹 VÉRIFICATION FINALE : ACCORD PIANO SIMULÉ</div>", unsafe_allow_html=True)
+                st.audio(data['audio_bytes'], format='audio/wav')
 
                 c1, c2 = st.columns([2, 1])
                 with c1: 
