@@ -103,23 +103,6 @@ def solve_key_sniper(chroma_vector, bass_vector):
         for mode in ["major", "minor"]:
             for i in range(12):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
-
-                third_maj = (i + 4) % 12
-                third_min = (i + 3) % 12
-
-                if mode == "major":
-                    score += cv[third_maj] * 0.60
-                    score -= cv[third_min] * 0.40
-                else:
-                    score += cv[third_min] * 0.65
-                    score -= cv[third_maj] * 0.45
-
-                # Ajout demandé : pénalité si la tierce attendue est vraiment faible
-                if mode == "major" and cv[third_maj] < 0.30:
-                    score *= 0.6   # pénalité forte si tierce majeure vraiment faible
-                if mode == "minor" and cv[third_min] < 0.30:
-                    score *= 0.55
-
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
                     if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.35 
