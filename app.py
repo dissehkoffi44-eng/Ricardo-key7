@@ -103,11 +103,11 @@ def solve_key_sniper(chroma_vector, bass_vector):
         for mode in ["major", "minor"]:
             for i in range(12):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
-                if cv[i] > 0.75: 
+                if cv[i] > 0.85: 
                     score += 0.25
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.001 
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.1 
                 if bv[i] > 0.6: score += (bv[i] * 0.2)
                 fifth_idx = (i + 7) % 12
                 if cv[fifth_idx] > 0.5: score += 0.1
