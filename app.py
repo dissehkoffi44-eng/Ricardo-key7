@@ -75,6 +75,11 @@ st.markdown("""
         background: #161b22; border-radius: 15px; padding: 20px; text-align: center; border: 1px solid #30363d;
         height: 100%; transition: 0.3s;
     }
+    .warning-ambiguous {
+        background: rgba(245, 158, 11, 0.15); color: #fbbf24;
+        padding: 12px; border-radius: 10px; border: 1px solid #f59e0b;
+        margin: 10px 0; font-family: 'JetBrains Mono', monospace;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -99,23 +104,62 @@ def solve_key_sniper(chroma_vector, bass_vector):
     best_key = "Unknown"
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
     bv = (bass_vector - bass_vector.min()) / (bass_vector.max() - bass_vector.min() + 1e-6)
+    
+    candidates = []
+    
     for p_name, p_data in PROFILES.items():
         for mode in ["major", "minor"]:
             for i in range(12):
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
-                if cv[i] > 0.85: 
-                    score += 0.25
+                
+                # Bonus mineur (dominante + sensible)
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.1 
-                if bv[i] > 0.6: score += (bv[i] * 0.2)
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35:
+                        score *= 1.18
+                
+                # Bonus basse renforcé
+                if bv[i] > 0.65:
+                    score += bv[i] * 0.35
+                
+                # Bonus quinte
                 fifth_idx = (i + 7) % 12
-                if cv[fifth_idx] > 0.5: score += 0.1
+                if cv[fifth_idx] > 0.5:
+                    score += 0.1
+                
+                # Bonus tierce
                 third_idx = (i + 4) % 12 if mode == "major" else (i + 3) % 12
-                if cv[third_idx] > 0.5: score += 0.1
+                if cv[third_idx] > 0.5:
+                    score += 0.1
+                
+                # NOUVEAU : bonus tonique explicite
+                if cv[i] > 0.55:
+                    score += 0.25
+                
                 if score > best_overall_score:
                     best_overall_score = score
                     best_key = f"{NOTES_LIST[i]} {mode}"
+                
+                candidates.append((f"{NOTES_LIST[i]} {mode}", score, i, bv[i]))
+
+    # Post-processing léger pour les confusions à 4 demi-tons
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_key, top_score, top_i, top_bv = candidates[0]
+        
+        if len(candidates) >= 2:
+            second_key, second_score, second_i, second_bv = candidates[1]
+            dist = min(abs(top_i - second_i), 12 - abs(top_i - second_i))
+            
+            if dist == 4 and (second_score / top_score > 0.78):  # très proche
+                if top_bv > second_bv + 0.12:
+                    # basse confirme le premier → on garde
+                    pass
+                else:
+                    # basse préfère le second ou neutre → on signale ambiguïté
+                    best_key = top_key  # on garde quand même le meilleur score
+                    # mais on pourra afficher un warning dans l'UI
+
     return {"key": best_key, "score": best_overall_score}
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
@@ -142,9 +186,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_filt = apply_sniper_filters(y, sr)
 
-    # --- CHANGEMENT ICI : PARAMÈTRES DU CODE 2 ---
     step, timeline, votes = 6, [], Counter()
-    segments = list(range(0, max(1, int(duration) - step), 2)) # On scanne toutes les 2s
+    segments = list(range(0, max(1, int(duration) - step), 2))
     total_segments = len(segments)
     
     for idx, start in enumerate(segments):
@@ -161,13 +204,15 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.85: continue
+        # Seuil relevé pour plus de fiabilité
+        if res['score'] < 0.88: continue
         
         weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
-    if not votes: return None
+    if not votes:
+        return None
 
     most_common = votes.most_common(2)
     final_key = most_common[0][0]
@@ -175,18 +220,36 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     mod_detected = len(most_common) > 1 and (votes[most_common[1][0]] / max(1, sum(votes.values()))) > 0.25
     target_key = most_common[1][0] if mod_detected else None
     
+    # Détection d'ambiguïté F <-> Ab (ou autres à 4 demi-tons)
+    ambiguous = False
+    if len(most_common) >= 2:
+        n1 = most_common[0][0].split()[0]
+        n2 = most_common[1][0].split()[0]
+        idx1 = NOTES_LIST.index(n1)
+        idx2 = NOTES_LIST.index(n2)
+        dist = min(abs(idx1 - idx2), 12 - abs(idx1 - idx2))
+        if dist == 4 and most_common[1][1] / most_common[0][1] > 0.75:
+            ambiguous = True
+
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, tuning=tuning), axis=1)
 
     res_obj = {
-        "key": final_key, "camelot": CAMELOT_MAP.get(final_key, "??"),
-        "conf": min(final_conf, 99), "tempo": int(float(tempo)),
-        "tuning": round(440 * (2**(tuning/12)), 1), "timeline": timeline,
-        "chroma": chroma_avg.tolist(), "modulation": mod_detected,
-        "target_key": target_key, "target_camelot": CAMELOT_MAP.get(target_key, "??") if target_key else None,
-        "name": file_name
+        "key": final_key,
+        "camelot": CAMELOT_MAP.get(final_key, "??"),
+        "conf": min(final_conf, 99),
+        "tempo": int(float(tempo)),
+        "tuning": round(440 * (2**(tuning/12)), 1),
+        "timeline": timeline,
+        "chroma": chroma_avg.tolist(),
+        "modulation": mod_detected,
+        "target_key": target_key,
+        "target_camelot": CAMELOT_MAP.get(target_key, "??") if target_key else None,
+        "name": file_name,
+        "ambiguous": ambiguous  # nouveau flag pour l'UI
     }
 
+    # Envoi Telegram (inchangé)
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
             df_tl = pd.DataFrame(timeline)
@@ -202,13 +265,16 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
                        f" 📈 *CONFIANCE:* `{res_obj['conf']}%`\n"
                        f" 🥁 *TEMPO:* `{res_obj['tempo']} BPM`\n"
                        f" 🎸 *ACCORD:* `{res_obj['tuning']} Hz`\n"
-                       f"{' ⚠️ *MODULATION:* ' + target_key.upper() if mod_detected else ' ✅ *STABILITÉ:* OK'}\n━━━━━━━━━━━━")
+                       f"{' ⚠️ *MODULATION:* ' + target_key.upper() if mod_detected else ' ✅ *STABILITÉ:* OK'}\n"
+                       f"{' ⚠️ *AMBIGUÏTÉ POSSIBLE (4 demi-tons)*' if ambiguous else ''}\n━━━━━━━━━━━━")
             files = {'p1': ('timeline.png', img_tl, 'image/png'), 'p2': ('radar.png', img_rd, 'image/png')}
             media = [{'type': 'photo', 'media': 'attach://p1', 'caption': caption, 'parse_mode': 'Markdown'}, {'type': 'photo', 'media': 'attach://p2'}]
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup", data={'chat_id': CHAT_ID, 'media': json.dumps(media)}, files=files, timeout=15)
-        except: pass
+        except:
+            pass
 
-    del y, y_filt; gc.collect()
+    del y, y_filt
+    gc.collect()
     return res_obj
 
 def get_chord_js(btn_id, key_str):
@@ -262,17 +328,21 @@ if uploaded_files:
         if data:
             with results_container:
                 st.markdown(f"<div class='file-header'>📂 ANALYSE TERMINÉE : {data['name']}</div>", unsafe_allow_html=True)
+                
                 color = "linear-gradient(135deg, #065f46, #064e3b)" if data['conf'] > 85 else "linear-gradient(135deg, #1e293b, #0f172a)"
                 st.markdown(f"""
                     <div class="report-card" style="background:{color};">
                         <h1 style="font-size:5.5em; margin:10px 0; font-weight:900;">{data['key'].upper()}</h1>
                         <p style="font-size:1.5em; opacity:0.9;">CAMELOT: <b>{data['camelot']}</b> | CONFIANCE: <b>{data['conf']}%</b></p>
                         {f"<div class='modulation-alert'>⚠️ MODULATION DÉTECTÉE : {data['target_key'].upper()} ({data['target_camelot']})</div>" if data['modulation'] else ""}
+                        {f"<div class='warning-ambiguous'>⚠️ AMBIGUÏTÉ POSSIBLE (peut-être tonalité à 4 demi-tons)</div>" if data.get('ambiguous', False) else ""}
                     </div> """, unsafe_allow_html=True)
                 
                 m1, m2, m3 = st.columns(3)
-                with m1: st.markdown(f"<div class='metric-box'><b>TEMPO</b><br><span style='font-size:2em; color:#10b981;'>{data['tempo']}</span><br>BPM</div>", unsafe_allow_html=True)
-                with m2: st.markdown(f"<div class='metric-box'><b>ACCORDAGE</b><br><span style='font-size:2em; color:#58a6ff;'>{data['tuning']}</span><br>Hz</div>", unsafe_allow_html=True)
+                with m1: 
+                    st.markdown(f"<div class='metric-box'><b>TEMPO</b><br><span style='font-size:2em; color:#10b981;'>{data['tempo']}</span><br>BPM</div>", unsafe_allow_html=True)
+                with m2: 
+                    st.markdown(f"<div class='metric-box'><b>ACCORDAGE</b><br><span style='font-size:2em; color:#58a6ff;'>{data['tuning']}</span><br>Hz</div>", unsafe_allow_html=True)
                 with m3:
                     btn_id = f"play_{i}_{hash(data['name'])}"
                     components.html(f"""<button id="{btn_id}" style="width:100%; height:95px; background:linear-gradient(45deg, #4F46E5, #7C3AED); color:white; border:none; border-radius:15px; cursor:pointer; font-weight:bold;">🎹 TESTER L'ACCORD</button>
