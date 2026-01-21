@@ -126,19 +126,23 @@ def solve_key_sniper(chroma_vector, bass_vector):
                     if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35:
                         score *= 1.18
                 
-                if bv[i] > 0.65:
-                    score += bv[i] * 0.35
+                if bv[i] > 0.6:  # Ajusté: seuil plus bas pour capter plus de cas, poids augmenté
+                    score += bv[i] * 0.45
                 
                 fifth_idx = (i + 7) % 12
                 if cv[fifth_idx] > 0.5:
-                    score += 0.1
+                    score += 0.15  # Augmenté pour la quinte, plus fiable que tierce
                 
                 third_idx = (i + 4) % 12 if mode == "major" else (i + 3) % 12
                 if cv[third_idx] > 0.5:
                     score += 0.1
                 
-                if cv[i] > 0.52:           # tonique renforcée
-                    score += 0.6
+                if cv[i] > 0.5:  # Ajusté: seuil légèrement baissé, poids augmenté
+                    score += 0.7
+                
+                # Nouveau: malus pour mode major si basse globale faible (favorise mineur pour morceaux chill)
+                if mode == "major" and np.mean(bv) < 0.45:
+                    score *= 0.75
                 
                 if score > best_overall_score:
                     best_overall_score = score
@@ -155,7 +159,7 @@ def solve_key_sniper(chroma_vector, bass_vector):
             dist = min(abs(top_i - second_i), 12 - abs(top_i - second_i))
             if dist == 4 and (second_score / top_score > 0.78):
                 if top_bv <= second_bv + 0.12:
-                    best_key = top_key  # on garde le top mais on signale ambiguïté plus tard
+                    best_key = top_key
 
     return {"key": best_key, "score": best_overall_score}
 
@@ -222,7 +226,7 @@ def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
     chroma_chord_avg = np.mean(chroma_chord, axis=1)
     
     similarity = np.corrcoef(chroma_song, chroma_chord_avg)[0, 1]
-    return 0.6 * similarity + 0.4 * consonance
+    return 0.7 * similarity + 0.3 * consonance  # Ajusté: plus de poids à similarity chroma
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     ext = file_name.split('.')[-1].lower()
@@ -255,6 +259,13 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     tonic_idx_from_bass = np.argmax(bass_profile_global)
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
 
+    # Nouveau: check intro pour tonique (premiers 3% du morceau)
+    intro_length = int(sr * duration * 0.03)
+    intro_y = y_filt[:intro_length]
+    intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 0 else bass_profile_global
+    intro_tonic_idx = np.argmax(intro_chroma)
+    intro_tonic_note = NOTES_LIST[intro_tonic_idx]
+
     step, timeline, votes = 6, [], Counter()
     segments = list(range(0, max(1, int(duration) - step), 2))
     total_segments = len(segments)
@@ -278,13 +289,17 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
         
-        # Bonus tonique globale ultra-fort
+        # Bonus tonique globale ultra-fort (ajusté plus haut)
         if res['key'].startswith(global_tonic_note):
-            votes[res['key']] += 60
+            votes[res['key']] += 90
         
-        # Bonus segments avec basse forte
+        # Bonus segments avec basse forte (ajusté plus haut)
         if np.mean(b_seg) > 0.4:
-            votes[res['key']] += int(res['score'] * 120)
+            votes[res['key']] += int(res['score'] * 150)
+        
+        # Bonus supplémentaire si match intro tonique
+        if res['key'].startswith(intro_tonic_note):
+            votes[res['key']] += 40
         
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
