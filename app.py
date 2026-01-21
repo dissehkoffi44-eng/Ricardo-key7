@@ -112,11 +112,11 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 third_min = (i + 3) % 12
 
                 if mode == "major":
-                    score += cv[third_maj] * 0.60
-                    score -= cv[third_min] * 0.40
+                    score += cv[third_maj] * 0.45
+                    score -= cv[third_min] * 0.25
                 else:
-                    score += cv[third_min] * 0.65
-                    score -= cv[third_maj] * 0.45
+                    score += cv[third_min] * 0.50
+                    score -= cv[third_maj] * 0.30
 
                 if bv[i] > 0.62:
                     score += bv[i] * 0.28
