@@ -153,8 +153,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         position = start / duration   # 0.0 → début, 1.0 → fin
 
         # NOUVEAU : pondération plus forte au corps du morceau
-        if 0.20 <= position <= 0.80:          # le "corps" principal (80% central)
-            weight = 2.0
+        if 0.20 <= position <= 0.70:          # le "corps" principal (80% central)
+            weight = 3.0
         elif position < 0.15 or position > 0.85:
             weight = 0.4                      # très faible pour intro/outro
         else:
