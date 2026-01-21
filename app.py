@@ -159,7 +159,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.55: continue
+        if res['score'] < 0.8: continue
         
         weight = 4.0 if (start < 12 or start > (duration - 20)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
