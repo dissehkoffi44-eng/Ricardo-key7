@@ -100,21 +100,52 @@ def solve_key_sniper(chroma_vector, bass_vector):
     best_key = "Unknown"
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
     bv = (bass_vector - bass_vector.min()) / (bass_vector.max() - bass_vector.min() + 1e-6)
+    
     for p_name, p_data in PROFILES.items():
         for mode in ["major", "minor"]:
             for i in range(12):
+                # Calcul de base (corrélation avec le profil)
                 score = np.corrcoef(cv, np.roll(p_data[mode], i))[0, 1]
+
+                # ─── AJOUT DISCRIMINANT MAJEUR/MINEUR ──────────────────────────────
+                third_maj = (i + 4) % 12
+                third_min = (i + 3) % 12
+
+                if mode == "major":
+                    score += cv[third_maj] * 0.60
+                    score -= cv[third_min] * 0.40
+                else:
+                    score += cv[third_min] * 0.65
+                    score -= cv[third_maj] * 0.45
+
+                if bv[i] > 0.62:
+                    score += bv[i] * 0.28
+
+                if cv[(i + 7) % 12] > 0.48:
+                    score += 0.13
+                
+                # Anciens bonus (conservés)
                 if mode == "minor":
                     dom_idx, leading_tone = (i + 7) % 12, (i + 11) % 12
-                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: score *= 1.35 
-                if bv[i] > 0.6: score += (bv[i] * 0.2)
+                    if cv[dom_idx] > 0.45 and cv[leading_tone] > 0.35: 
+                        score *= 1.35 
+                
+                if bv[i] > 0.6: 
+                    score += (bv[i] * 0.2)
+                
                 fifth_idx = (i + 7) % 12
-                if cv[fifth_idx] > 0.5: score += 0.1
+                if cv[fifth_idx] > 0.5: 
+                    score += 0.1
+                
                 third_idx = (i + 4) % 12 if mode == "major" else (i + 3) % 12
-                if cv[third_idx] > 0.5: score += 0.1
+                if cv[third_idx] > 0.5: 
+                    score += 0.1
+
+                # Mise à jour du meilleur candidat
                 if score > best_overall_score:
                     best_overall_score = score
                     best_key = f"{NOTES_LIST[i]} {mode}"
+
     return {"key": best_key, "score": best_overall_score}
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
