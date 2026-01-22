@@ -16,17 +16,14 @@ from datetime import datetime
 from pydub import AudioSegment
 import wave
 
-# --- FORCE FFMPEG PATH (WINDOWS FIX) ---
 if os.path.exists(r'C:\ffmpeg\bin'):
     os.environ["PATH"] += os.pathsep + r'C:\ffmpeg\bin'
 
-# --- CONFIGURATION SYSTÈME ---
 st.set_page_config(page_title="RCDJ228 MUSIC SNIPER", page_icon="🎯", layout="wide")
 
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN")
 CHAT_ID = st.secrets.get("CHAT_ID")
 
-# --- RÉFÉRENTIELS HARMONIQUES ---
 NOTES_LIST = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 NOTES_ORDER = [f"{n} {m}" for n in NOTES_LIST for m in ['major', 'minor']]
 
@@ -52,7 +49,6 @@ PROFILES = {
     }
 }
 
-# --- STYLES CSS ---
 st.markdown("""
     <style>
     .main { background-color: #0b0e14; }
@@ -88,7 +84,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FONCTIONS UTILITAIRES ---
 def butter_lowpass(y, sr, cutoff=180, order=4):
     nyq = 0.5 * sr
     normal_cutoff = cutoff / nyq
@@ -248,7 +243,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_filt = apply_sniper_filters(y, sr)
 
-    # Calcul global basse
     y_low_global = butter_lowpass(y_filt, sr, cutoff=180)
     bass_chroma_global = librosa.feature.chroma_cqt(y=y_low_global, sr=sr, n_chroma=12)
     bass_profile_global = np.mean(bass_chroma_global, axis=1)
@@ -256,7 +250,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
     global_bass_strength = np.max(bass_profile_global)
 
-    # Intro (3 % du morceau)
     intro_length = int(sr * duration * 0.03)
     intro_y = y_filt[:intro_length]
     intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 1000 else bass_profile_global
@@ -310,7 +303,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
 
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, tuning=tuning), axis=1)
 
-    # Post-traitement tonique chroma global
     top_candidates = [k for k, _ in most_common]
     best_tonic_match = max(top_candidates, key=lambda k: chroma_avg[NOTES_LIST.index(k.split()[0])])
 
@@ -323,7 +315,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         perception_adjusted = True
         adjusted_reason = "Ajusté via chroma global (tonique la plus forte)"
 
-    # NOUVEAU : Vérification finale tierce + quinte
     final_root_idx = NOTES_LIST.index(final_key.split()[0])
     is_major = "major" in final_key
     third_offset = 4 if is_major else 3
@@ -332,10 +323,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     final_third_idx = (final_root_idx + third_offset) % 12
     final_fifth_idx = (final_root_idx + fifth_offset) % 12
 
-    # Score harmonique = moyenne des 3 notes (tonique + tierce + quinte)
     final_harmonic_score = (chroma_avg[final_root_idx] + chroma_avg[final_third_idx] + chroma_avg[final_fifth_idx]) / 3
 
-    # On teste aussi les 3 meilleurs candidats
     harmonic_scores = {}
     best_harmonic_candidate = final_key
     best_harmonic_score = final_harmonic_score
@@ -349,7 +338,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         harm_score = (chroma_avg[root_idx] + chroma_avg[third_idx] + chroma_avg[fifth_idx]) / 3
         harmonic_scores[cand] = round(harm_score, 3)
 
-        if harm_score > best_harmonic_score + 0.05:  # seuil de supériorité clair
+        if harm_score > best_harmonic_score + 0.05:
             best_harmonic_candidate = cand
             best_harmonic_score = harm_score
 
@@ -386,32 +375,19 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     candidates.append(rel_key)
     candidates = list(set(candidates))[:3]
 
-    # Debug perception + harmonic
     perception_scores = {}
     harmonic_debug_str = "\n".join([f"{k}: {v}" for k, v in harmonic_scores.items()])
 
-    best_perceptual_score = -1
-    best_key = final_key
-    best_audio_bytes = None
-
+    # On calcule les scores perception pour le debug seulement (pas d'ajustement)
     for cand_key in candidates:
         audio_bytes, chord_y = generate_piano_chord_audio(cand_key, sr=sr)
         perceptual_score = simulate_ear_perception(chord_y, y_filt, sr, chroma_avg)
         perception_scores[cand_key] = round(perceptual_score, 3)
-        
-        if perceptual_score > best_perceptual_score:
-            best_perceptual_score = perceptual_score
-            best_key = cand_key
-            best_audio_bytes = audio_bytes
-            if cand_key != final_key:
-                perception_adjusted = True
-                adjusted_reason = f"Ajusté via simulation perceptive (score: {round(perceptual_score, 3)})"
 
-    if perception_adjusted and best_key != final_key:
-        final_key = best_key
-        final_conf = min(final_conf, 92)
+    # On garde l'ajustement via tierce+quinte, mais pas via perception
+    # → perception_adjusted reste False sauf si tierce/quinte l'a déjà fait
+    # (on peut le laisser à True si on veut garder l'info dans l'UI)
 
-    # Debug info enrichie
     final_root_idx = NOTES_LIST.index(final_key.split()[0])
     is_major = "major" in final_key
     third_offset = 4 if is_major else 3
@@ -455,7 +431,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "debug_info": debug_info
     }
 
-    # Telegram (inchangé)
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
             df_tl = pd.DataFrame(timeline)
@@ -502,9 +477,6 @@ def get_chord_js(btn_id, key_str):
         }});
     }}; """
 
-# ────────────────────────────────────────────────
-#                  INTERFACE PRINCIPALE
-# ────────────────────────────────────────────────
 st.title("🎯 RCDJ228 MUSIC SNIPER")
 
 uploaded_files = st.file_uploader("📂 Déposez vos fichiers audio", type=['mp3','wav','flac','m4a'], accept_multiple_files=True)
@@ -561,7 +533,6 @@ if uploaded_files:
                 st.markdown("<div style='text-align:center;margin:15px 0;font-weight:bold;color:#10b981;'>🎹 VÉRIF FINALE : ACCORD PIANO</div>", unsafe_allow_html=True)
                 st.audio(data['audio_bytes'], format='audio/wav')
 
-                # Bloc debug enrichi
                 with st.expander("🔍 Debug Info (pour comprendre la décision)", expanded=False):
                     debug = data.get("debug_info", {})
                     if debug:
@@ -578,7 +549,7 @@ if uploaded_files:
 
 **Scores harmoniques des candidats** :  
 
-**Scores perception des candidats** :  
+**Scores perception des candidats** (pour info seulement) :  
 
 **Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
                         """)
