@@ -254,6 +254,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     bass_profile_global = np.mean(bass_chroma_global, axis=1)
     tonic_idx_from_bass = np.argmax(bass_profile_global)
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
+    global_bass_strength = np.max(bass_profile_global)
 
     # Intro (3 % du morceau)
     intro_length = int(sr * duration * 0.03)
@@ -261,6 +262,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 1000 else bass_profile_global
     intro_tonic_idx = np.argmax(intro_chroma)
     intro_tonic_note = NOTES_LIST[intro_tonic_idx]
+    intro_strength = np.max(intro_chroma)
 
     step, timeline, votes = 6, [], Counter()
     segments = list(range(0, max(1, int(duration) - step), 2))
@@ -299,7 +301,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     if not votes:
         return None
 
-    # Debug : top votes AVANT post-traitement
     debug_top_votes = votes.most_common(4)
     debug_top_votes_str = "\n".join([f"{k}: {v} votes" for k, v in debug_top_votes])
 
@@ -307,8 +308,9 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     final_key = most_common[0][0]
     final_conf = int(np.mean([t['Conf'] for t in timeline if t['Note'] == final_key]) * 100)
 
-    # Post-traitement tonique chroma global
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, tuning=tuning), axis=1)
+
+    # Post-traitement tonique chroma global
     top_candidates = [k for k, _ in most_common]
     best_tonic_match = max(top_candidates, key=lambda k: chroma_avg[NOTES_LIST.index(k.split()[0])])
 
@@ -320,6 +322,42 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         final_conf = int(final_conf * 0.92)
         perception_adjusted = True
         adjusted_reason = "Ajusté via chroma global (tonique la plus forte)"
+
+    # NOUVEAU : Vérification finale tierce + quinte
+    final_root_idx = NOTES_LIST.index(final_key.split()[0])
+    is_major = "major" in final_key
+    third_offset = 4 if is_major else 3
+    fifth_offset = 7
+
+    final_third_idx = (final_root_idx + third_offset) % 12
+    final_fifth_idx = (final_root_idx + fifth_offset) % 12
+
+    # Score harmonique = moyenne des 3 notes (tonique + tierce + quinte)
+    final_harmonic_score = (chroma_avg[final_root_idx] + chroma_avg[final_third_idx] + chroma_avg[final_fifth_idx]) / 3
+
+    # On teste aussi les 3 meilleurs candidats
+    harmonic_scores = {}
+    best_harmonic_candidate = final_key
+    best_harmonic_score = final_harmonic_score
+
+    for cand in top_candidates[:3]:
+        root_idx = NOTES_LIST.index(cand.split()[0])
+        mode_cand = "major" if "major" in cand else "minor"
+        third_off = 4 if mode_cand == "major" else 3
+        third_idx = (root_idx + third_off) % 12
+        fifth_idx = (root_idx + 7) % 12
+        harm_score = (chroma_avg[root_idx] + chroma_avg[third_idx] + chroma_avg[fifth_idx]) / 3
+        harmonic_scores[cand] = round(harm_score, 3)
+
+        if harm_score > best_harmonic_score + 0.05:  # seuil de supériorité clair
+            best_harmonic_candidate = cand
+            best_harmonic_score = harm_score
+
+    if best_harmonic_candidate != final_key:
+        final_key = best_harmonic_candidate
+        final_conf = int(final_conf * 0.90)
+        perception_adjusted = True
+        adjusted_reason = f"Ajusté via tierce+quinte (score harm: {round(best_harmonic_score, 3)})"
 
     mod_detected = len(most_common) > 1 and (most_common[1][1] / sum(v for _, v in most_common)) > 0.25
     target_key = most_common[1][0] if mod_detected else None
@@ -346,7 +384,11 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     rel_idx = (NOTES_LIST.index(final_key.split()[0]) + rel_offset) % 12
     rel_key = f"{NOTES_LIST[rel_idx]} {rel_mode}"
     candidates.append(rel_key)
-    candidates = list(set(candidates))
+    candidates = list(set(candidates))[:3]
+
+    # Debug perception + harmonic
+    perception_scores = {}
+    harmonic_debug_str = "\n".join([f"{k}: {v}" for k, v in harmonic_scores.items()])
 
     best_perceptual_score = -1
     best_key = final_key
@@ -355,24 +397,42 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     for cand_key in candidates:
         audio_bytes, chord_y = generate_piano_chord_audio(cand_key, sr=sr)
         perceptual_score = simulate_ear_perception(chord_y, y_filt, sr, chroma_avg)
+        perception_scores[cand_key] = round(perceptual_score, 3)
+        
         if perceptual_score > best_perceptual_score:
             best_perceptual_score = perceptual_score
             best_key = cand_key
             best_audio_bytes = audio_bytes
             if cand_key != final_key:
                 perception_adjusted = True
-                adjusted_reason = "Ajusté via simulation perceptive (accord piano)"
+                adjusted_reason = f"Ajusté via simulation perceptive (score: {round(perceptual_score, 3)})"
 
     if perception_adjusted and best_key != final_key:
         final_key = best_key
         final_conf = min(final_conf, 92)
 
-    # Préparation debug info
+    # Debug info enrichie
+    final_root_idx = NOTES_LIST.index(final_key.split()[0])
+    is_major = "major" in final_key
+    third_offset = 4 if is_major else 3
+    fifth_offset = 7
+    final_third_idx = (final_root_idx + third_offset) % 12
+    final_fifth_idx = (final_root_idx + fifth_offset) % 12
+
     debug_info = {
         "global_bass_dominant_note": global_tonic_note,
+        "global_bass_strength": round(global_bass_strength, 3),
         "intro_dominant_note": intro_tonic_note,
+        "intro_strength": round(intro_strength, 3),
         "top_votes_before_adjust": debug_top_votes_str,
         "global_chroma_strongest_tonic": NOTES_LIST[np.argmax(chroma_avg)],
+        "global_chroma_strongest_value": round(np.max(chroma_avg), 3),
+        "final_tonic_strength": round(chroma_avg[final_root_idx], 3),
+        "final_third_strength": round(chroma_avg[final_third_idx], 3),
+        "final_fifth_strength": round(chroma_avg[final_fifth_idx], 3),
+        "final_harmonic_score": round((chroma_avg[final_root_idx] + chroma_avg[final_third_idx] + chroma_avg[final_fifth_idx]) / 3, 3),
+        "harmonic_scores_candidates": harmonic_debug_str,
+        "perception_scores_candidates": "\n".join([f"{k}: {v}" for k, v in perception_scores.items()]),
         "final_adjust_reason": adjusted_reason,
         "perception_adjusted": perception_adjusted
     }
@@ -392,7 +452,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "ambiguous": ambiguous,
         "audio_bytes": best_audio_bytes,
         "perception_adjusted": perception_adjusted,
-        "debug_info": debug_info  # ← ajouté ici
+        "debug_info": debug_info
     }
 
     # Telegram (inchangé)
@@ -501,21 +561,26 @@ if uploaded_files:
                 st.markdown("<div style='text-align:center;margin:15px 0;font-weight:bold;color:#10b981;'>🎹 VÉRIF FINALE : ACCORD PIANO</div>", unsafe_allow_html=True)
                 st.audio(data['audio_bytes'], format='audio/wav')
 
-                # NOUVEAU : Bloc debug
+                # Bloc debug enrichi
                 with st.expander("🔍 Debug Info (pour comprendre la décision)", expanded=False):
                     debug = data.get("debug_info", {})
                     if debug:
                         st.markdown(f"""
-                        **Note dominante basse globale** : **{debug.get('global_bass_dominant_note', '—')}**  
-                        **Note dominante intro (3%)** : **{debug.get('intro_dominant_note', '—')}**  
-                        
-                        **Top 4 votes avant ajustement** :  
-                        ```
-                        {debug.get('top_votes_before_adjust', 'Aucun vote')}
-                        ```
-                        
-                        **Tonique la plus forte dans chroma global** : **{debug.get('global_chroma_strongest_tonic', '—')}**  
-                        **Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
+**Note dominante basse globale** : **{debug.get('global_bass_dominant_note', '—')}** (force: {debug.get('global_bass_strength', '—')})  
+**Note dominante intro (3%)** : **{debug.get('intro_dominant_note', '—')}** (force: {debug.get('intro_strength', '—')})  
+
+**Top 4 votes avant ajustement** :  
+
+**Tonique la plus forte dans chroma global** : **{debug.get('global_chroma_strongest_tonic', '—')}** (valeur: {debug.get('global_chroma_strongest_value', '—')})  
+
+**Clé finale** → tonique: {round(debug.get('final_tonic_strength', 0), 3)} | tierce: {round(debug.get('final_third_strength', 0), 3)} | quinte: {round(debug.get('final_fifth_strength', 0), 3)}  
+**Score harmonique final (ton+tierce+quinte)** : **{debug.get('final_harmonic_score', '—')}**
+
+**Scores harmoniques des candidats** :  
+
+**Scores perception des candidats** :  
+
+**Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
                         """)
                     else:
                         st.info("Aucune info debug disponible.")
