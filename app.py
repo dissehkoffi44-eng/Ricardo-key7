@@ -378,15 +378,16 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     perception_scores = {}
     harmonic_debug_str = "\n".join([f"{k}: {v}" for k, v in harmonic_scores.items()])
 
-    # On calcule les scores perception pour le debug seulement (pas d'ajustement)
+    # Calcul perception pour debug seulement (pas d'ajustement)
+    best_audio_bytes = None
     for cand_key in candidates:
         audio_bytes, chord_y = generate_piano_chord_audio(cand_key, sr=sr)
         perceptual_score = simulate_ear_perception(chord_y, y_filt, sr, chroma_avg)
         perception_scores[cand_key] = round(perceptual_score, 3)
 
-    # On garde l'ajustement via tierce+quinte, mais pas via perception
-    # → perception_adjusted reste False sauf si tierce/quinte l'a déjà fait
-    # (on peut le laisser à True si on veut garder l'info dans l'UI)
+        # On génère toujours l'accord pour la clé finale (évite NameError)
+        if cand_key == final_key:
+            best_audio_bytes = audio_bytes
 
     final_root_idx = NOTES_LIST.index(final_key.split()[0])
     is_major = "major" in final_key
@@ -549,7 +550,7 @@ if uploaded_files:
 
 **Scores harmoniques des candidats** :  
 
-**Scores perception des candidats** (pour info seulement) :  
+**Scores perception des candidats** (info seulement) :  
 
 **Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
                         """)
