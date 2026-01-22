@@ -296,7 +296,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
 
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, tuning=tuning), axis=1)
 
-    # NOUVEAU : Détection "mineur probable" et bonus ciblé aux mineures
     is_minor_likely = (
         global_bass_strength > 0.48 and
         chroma_avg[(NOTES_LIST.index(global_tonic_note) + 4) % 12] < 0.38
@@ -305,7 +304,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     if is_minor_likely:
         for key in votes:
             if "minor" in key:
-                votes[key] += 35  # bonus modéré pour favoriser mineur quand conditions réunies
+                votes[key] += 35
 
     debug_top_votes = votes.most_common(4)
     debug_top_votes_str = "\n".join([f"{k}: {v} votes" for k, v in debug_top_votes])
@@ -389,14 +388,26 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     perception_scores = {}
     harmonic_debug_str = "\n".join([f"{k}: {v}" for k, v in harmonic_scores.items()])
 
+    best_perceptual_score = -1
+    best_key = final_key
     best_audio_bytes = None
+
     for cand_key in candidates:
         audio_bytes, chord_y = generate_piano_chord_audio(cand_key, sr=sr)
         perceptual_score = simulate_ear_perception(chord_y, y_filt, sr, chroma_avg)
         perception_scores[cand_key] = round(perceptual_score, 3)
-
-        if cand_key == final_key:
+        
+        if perceptual_score > 0.4 and perceptual_score > best_perceptual_score + 0.15:
+            best_perceptual_score = perceptual_score
+            best_key = cand_key
             best_audio_bytes = audio_bytes
+            if cand_key != final_key:
+                perception_adjusted = True
+                adjusted_reason = f"Ajusté via simulation perceptive (score: {round(perceptual_score, 3)})"
+
+    if perception_adjusted and best_key != final_key:
+        final_key = best_key
+        final_conf = min(final_conf, 92)
 
     final_root_idx = NOTES_LIST.index(final_key.split()[0])
     is_major = "major" in final_key
@@ -420,8 +431,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "harmonic_scores_candidates": harmonic_debug_str,
         "perception_scores_candidates": "\n".join([f"{k}: {v}" for k, v in perception_scores.items()]),
         "final_adjust_reason": adjusted_reason,
-        "perception_adjusted": perception_adjusted,
-        "minor_likely_detected": is_minor_likely  # pour voir si le bonus mineur s'est déclenché
+        "perception_adjusted": perception_adjusted
     }
 
     res_obj = {
@@ -525,11 +535,11 @@ if uploaded_files:
                     <div class="report-card" style="background:{color};">
                         <h1 style="font-size:5.5em; margin:10px 0; font-weight:900;">{data['key'].upper()}</h1>
                         <p style="font-size:1.5em; opacity:0.9;">CAMELOT: <b>{data['camelot']}</b> | CONFIANCE: <b>{data['conf']}%</b></p>
-                        {f"<div class='modulation-alert'>⚠️ MODULATION → {data['target_key'].upper()} ({data['target_camelot']})</div>" if data['modulation'] else ""}
-                        {f"<div class='warning-ambiguous'>⚠️ AMBIGUÏTÉ POSSIBLE (4 demi-tons)</div>" if data.get('ambiguous', False) else ""}
-                        {f"<div class='perception-alert'>👂 AJUSTÉ (perception / tonique)</div>" if data.get('perception_adjusted', False) else ""}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    {f"<div class='modulation-alert'>⚠️ MODULATION → {data['target_key'].upper()} ({data['target_camelot']})</div>" if data['modulation'] else ""}
+                    {f"<div class='warning-ambiguous'>⚠️ AMBIGUÏTÉ POSSIBLE (4 demi-tons)</div>" if data.get('ambiguous', False) else ""}
+                    {f"<div class='perception-alert'>👂 AJUSTÉ (perception / tonique)</div>" if data.get('perception_adjusted', False) else ""}
+                </div>
+                """, unsafe_allow_html=True)
                 
                 m1, m2, m3 = st.columns(3)
                 with m1: st.markdown(f"<div class='metric-box'><b>TEMPO</b><br><span style='font-size:2em;color:#10b981;'>{data['tempo']}</span><br>BPM</div>", unsafe_allow_html=True)
@@ -560,7 +570,7 @@ if uploaded_files:
 
 **Scores harmoniques des candidats** :  
 
-**Scores perception des candidats** (info seulement) :  
+**Scores perception des candidats** :  
 
 **Mineur probable détecté (bonus appliqué)** : **{debug.get('minor_likely_detected', False)}**  
 **Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
