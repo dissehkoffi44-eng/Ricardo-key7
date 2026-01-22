@@ -250,7 +250,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
     global_bass_strength = np.max(bass_profile_global)
 
-    intro_length = int(sr * duration * 0.03)
+    # Analyse intro conservée pour debug/affichage seulement
+    intro_length = int(sr * duration * 0.04)
     intro_y = y_filt[:intro_length]
     intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 1000 else bass_profile_global
     intro_tonic_idx = np.argmax(intro_chroma)
@@ -266,6 +267,17 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             prog = int((idx / total_segments) * 100)
             _progress_callback(prog, f"Scan : {start}s / {int(duration)}s")
 
+        # Pondération temporelle
+        progress = start / duration
+        if progress < 0.12:
+            weight = 0.65          # petit bonus intro
+        elif progress > 0.88:
+            weight = 0.4           # fin très faible
+        elif 0.20 <= progress <= 0.80:
+            weight = 1.35          # boost corps central
+        else:
+            weight = 0.9
+
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
         if len(seg) < 1000 or np.max(np.abs(seg)) < 0.01: continue
@@ -277,17 +289,10 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         
         if res['score'] < 0.88: continue
         
-        weight = 2.0 if (start < 10 or start > (duration - 15)) else 1.0
         votes[res['key']] += int(res['score'] * 100 * weight)
-        
-        if res['key'].startswith(global_tonic_note):
-            votes[res['key']] += 45
         
         if np.mean(b_seg) > 0.38:
             votes[res['key']] += int(res['score'] * 80)
-        
-        if res['key'].startswith(intro_tonic_note):
-            votes[res['key']] += 25
         
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
@@ -559,21 +564,23 @@ if uploaded_files:
                     if debug:
                         st.markdown(f"""
 **Note dominante basse globale** : **{debug.get('global_bass_dominant_note', '—')}** (force: {debug.get('global_bass_strength', '—')})  
-**Note dominante intro (3%)** : **{debug.get('intro_dominant_note', '—')}** (force: {debug.get('intro_strength', '—')})  
+**Note dominante intro (~4%)** : **{debug.get('intro_dominant_note', '—')}** (force: {debug.get('intro_strength', '—')})  
 
 **Top 4 votes avant ajustement** :  
+{debug.get('top_votes_before_adjust', '—')}
 
 **Tonique la plus forte dans chroma global** : **{debug.get('global_chroma_strongest_tonic', '—')}** (valeur: {debug.get('global_chroma_strongest_value', '—')})  
 
 **Clé finale** → tonique: {round(debug.get('final_tonic_strength', 0), 3)} | tierce: {round(debug.get('final_third_strength', 0), 3)} | quinte: {round(debug.get('final_fifth_strength', 0), 3)}  
-**Score harmonique final (ton+tierce+quinte)** : **{debug.get('final_harmonic_score', '—')}**
+**Score harmonique final** : **{debug.get('final_harmonic_score', '—')}**
 
-**Scores harmoniques des candidats** :  
+**Scores harmoniques candidats** :  
+{debug.get('harmonic_scores_candidates', '—')}
 
-**Scores perception des candidats** :  
+**Scores perception candidats** :  
+{debug.get('perception_scores_candidates', '—')}
 
-**Mineur probable détecté (bonus appliqué)** : **{debug.get('minor_likely_detected', False)}**  
-**Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
+**Raison ajustement final** : **{debug.get('final_adjust_reason', 'Aucun')}**
                         """)
                     else:
                         st.info("Aucune info debug disponible.")
