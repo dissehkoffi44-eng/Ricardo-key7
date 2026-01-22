@@ -34,6 +34,7 @@ CAMELOT_MAP = {
     'F# minor': '11A', 'G minor': '6A', 'G# minor': '1A', 'A minor': '8A', 'A# minor': '3A', 'B minor': '10A'
 }
 
+# Enhanced profiles with additional ones for better ensemble
 PROFILES = {
     "krumhansl": {
         "major": [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
@@ -46,6 +47,14 @@ PROFILES = {
     "bellman": {
         "major": [16.8, 0.86, 12.95, 1.41, 13.49, 11.93, 1.25, 16.74, 1.56, 12.81, 1.89, 12.44],
         "minor": [18.16, 0.69, 12.99, 13.34, 1.07, 11.15, 1.38, 17.2, 13.62, 1.27, 12.79, 2.4]
+    },
+    "aarden": {  # Added Aarden-Essen profile for improved major/minor discrimination
+        "major": [17.7661, 0.145624, 14.9265, 0.160186, 19.8049, 11.3587, 0.291248, 22.062, 0.145624, 8.15494, 0.232998, 18.6691],
+        "minor": [18.2648, 0.737619, 14.0499, 16.8599, 0.702699, 14.5212, 0.737619, 19.8145, 5.84214, 2.68046, 2.51091, 9.84455]
+    },
+    "sapp": {  # Added Sapp profile for robustness
+        "major": [2, 0, 1, 0, 2, 1, 0, 2, 0, 1, 0, 1],
+        "minor": [2, 0, 1, 1, 0, 1, 0, 2, 1, 0, 0, 1]
     }
 }
 
@@ -81,6 +90,11 @@ st.markdown("""
         padding: 15px; border-radius: 15px; border: 1px solid #3b82f6;
         margin-top: 20px; font-weight: bold; font-family: 'JetBrains Mono', monospace;
     }
+    .low-conf-alert {
+        background: rgba(245, 158, 11, 0.15); color: #fbbf24;
+        padding: 15px; border-radius: 15px; border: 1px solid #f59e0b;
+        margin-top: 20px; font-weight: bold; font-family: 'JetBrains Mono', monospace;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -91,9 +105,10 @@ def butter_lowpass(y, sr, cutoff=180, order=4):
     return lfilter(b, a, y)
 
 def apply_sniper_filters(y, sr):
-    y_harm = librosa.effects.harmonic(y, margin=4.0)
+    # Enhanced harmonic separation with higher margin for better isolation
+    y_harm = librosa.effects.harmonic(y, margin=8.0)
     nyq = 0.5 * sr
-    low = 80 / nyq
+    low = 60 / nyq  # Lowered low cutoff for better bass capture
     high = 5000 / nyq
     b, a = butter(4, [low, high], btype='band')
     return lfilter(b, a, y_harm)
@@ -104,12 +119,11 @@ def get_bass_priority(y, sr):
     return np.mean(chroma_bass, axis=1)
 
 def solve_key_sniper(chroma_vector, bass_vector):
-    best_overall_score = -1
-    best_key = "Unknown"
+    # Now using ensemble: collect scores from all profiles and average
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
     bv = (bass_vector - bass_vector.min()) / (bass_vector.max() - bass_vector.min() + 1e-6)
     
-    candidates = []
+    profile_scores = {f"{NOTES_LIST[i]} {mode}": [] for i in range(12) for mode in ["major", "minor"]}
     
     for p_name, p_data in PROFILES.items():
         for mode in ["major", "minor"]:
@@ -135,24 +149,34 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 if cv[i] > 0.50:
                     score += 0.45
                 
-                if score > best_overall_score:
-                    best_overall_score = score
-                    best_key = f"{NOTES_LIST[i]} {mode}"
-                
-                candidates.append((f"{NOTES_LIST[i]} {mode}", score, i, bv[i]))
+                key_name = f"{NOTES_LIST[i]} {mode}"
+                profile_scores[key_name].append(score)
+    
+    # Average scores across profiles for each key
+    avg_scores = {k: np.mean(v) for k, v in profile_scores.items() if v}
+    if not avg_scores:
+        return {"key": "Unknown", "score": 0}
+    
+    best_key = max(avg_scores, key=avg_scores.get)
+    best_score = avg_scores[best_key]
+    
+    # Candidate refinement for ambiguity
+    candidates = sorted(avg_scores.items(), key=lambda x: x[1], reverse=True)[:5]  # Top 5 for better ambiguity check
+    top_key, top_score = candidates[0]
+    if len(candidates) >= 2:
+        second_key, second_score = candidates[1]
+        top_i = NOTES_LIST.index(top_key.split()[0])
+        second_i = NOTES_LIST.index(second_key.split()[0])
+        dist = min(abs(top_i - second_i), 12 - abs(top_i - second_i))
+        if dist in [3, 4, 9] and (second_score / top_score > 0.85):  # Enhanced check for relative/parallel
+            # Compare bass strengths
+            top_bv = bv[top_i]
+            second_bv = bv[second_i]
+            if top_bv < second_bv - 0.05:
+                best_key = second_key
+                best_score = second_score
 
-    if candidates:
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        top_key, top_score, top_i, top_bv = candidates[0]
-        
-        if len(candidates) >= 2:
-            second_key, second_score, second_i, second_bv = candidates[1]
-            dist = min(abs(top_i - second_i), 12 - abs(top_i - second_i))
-            if dist == 4 and (second_score / top_score > 0.80):
-                if top_bv <= second_bv + 0.10:
-                    best_key = top_key
-
-    return {"key": best_key, "score": best_overall_score}
+    return {"key": best_key, "score": best_score}
 
 def generate_piano_chord_audio(key_str, sr=22050, duration=2.0):
     root_note, mode = key_str.split()
@@ -197,19 +221,22 @@ def generate_piano_chord_audio(key_str, sr=22050, duration=2.0):
     return buf.read(), y
 
 def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
+    # Enhanced roughness calculation with critical band consideration
     stft_chord = np.abs(librosa.stft(chord_y))
     freqs = librosa.fft_frequencies(sr=sr)
     mag = np.mean(stft_chord, axis=1)
     
-    peak_idxs = np.argsort(mag)[-10:]
+    peak_idxs = np.argsort(mag)[-12:]  # More peaks for better accuracy
     chord_freqs = freqs[peak_idxs]
     
     roughness = 0.0
     for i in range(len(chord_freqs)):
         for j in range(i+1, len(chord_freqs)):
             df = abs(chord_freqs[i] - chord_freqs[j])
-            if 20 < df < 200:
-                roughness += (mag[peak_idxs[i]] * mag[peak_idxs[j]]) * (df / 200) ** 2
+            if 15 < df < 250:  # Adjusted range for human perception
+                # Weight by critical bandwidth approximation
+                cbw = 0.25 * (chord_freqs[i] + chord_freqs[j]) / 2
+                roughness += (mag[peak_idxs[i]] * mag[peak_idxs[j]]) * (df / cbw) ** 2
     
     consonance = 1 / (1 + roughness + 1e-6)
     
@@ -217,7 +244,7 @@ def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
     chroma_chord_avg = np.mean(chroma_chord, axis=1)
     
     similarity = np.corrcoef(chroma_song, chroma_chord_avg)[0, 1]
-    return 0.65 * similarity + 0.35 * consonance
+    return 0.60 * similarity + 0.40 * consonance  # Adjusted weights for better balance
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     ext = file_name.split('.')[-1].lower()
@@ -240,6 +267,9 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         return None
 
     duration = librosa.get_duration(y=y, sr=sr)
+    if duration < 10:  # Added check for short files
+        st.warning(f"Fichier trop court ({duration}s). Résultats potentiellement imprécis.")
+    
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     y_filt = apply_sniper_filters(y, sr)
 
@@ -250,16 +280,17 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
     global_bass_strength = np.max(bass_profile_global)
 
-    # On garde l'analyse intro pour debug/affichage, mais on NE vote PLUS dessus
-    intro_length = int(sr * duration * 0.04)  # un peu plus large pour info
+    # Analyse intro conservée pour debug/affichage seulement
+    intro_length = int(sr * duration * 0.04)
     intro_y = y_filt[:intro_length]
     intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 1000 else bass_profile_global
     intro_tonic_idx = np.argmax(intro_chroma)
     intro_tonic_note = NOTES_LIST[intro_tonic_idx]
     intro_strength = np.max(intro_chroma)
 
-    step, timeline, votes = 6, [], Counter()
-    segments = list(range(0, max(1, int(duration) - step), 2))
+    step = 5  # Reduced step for finer resolution
+    timeline, votes = [], Counter()
+    segments = list(range(0, max(1, int(duration) - step), 1))  # Increased overlap (every 1s)
     total_segments = len(segments)
     
     for idx, start in enumerate(segments):
@@ -267,35 +298,32 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             prog = int((idx / total_segments) * 100)
             _progress_callback(prog, f"Scan : {start}s / {int(duration)}s")
 
-        # ------------------------------------------------------
-        # NOUVEAU : pondération plus intelligente du corps
-        # ------------------------------------------------------
+        # Pondération temporelle
         progress = start / duration
-        if progress < 0.12 or progress > 0.88:
-            weight = 0.4          # très faible aux extrémités
+        if progress < 0.12:
+            weight = 0.65          # petit bonus intro
+        elif progress > 0.88:
+            weight = 0.4           # fin très faible
         elif 0.20 <= progress <= 0.80:
-            weight = 1.35         # boost corps central
+            weight = 1.35          # boost corps central
         else:
             weight = 0.9
 
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
-        if len(seg) < 1000 or np.max(np.abs(seg)) < 0.01: continue
+        if len(seg) < sr * 2 or np.max(np.abs(seg)) < 0.005: continue  # Stricter silence check
         
-        c_raw = librosa.feature.chroma_cqt(y=seg, sr=sr, tuning=tuning, n_chroma=24, bins_per_octave=24)
+        c_raw = librosa.feature.chroma_cqt(y=seg, sr=sr, tuning=tuning, n_chroma=24, bins_per_octave=36)  # Higher resolution CQT
         c_avg = np.mean((c_raw[::2, :] + c_raw[1::2, :]) / 2, axis=1)
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.88: continue
+        if res['score'] < 0.75: continue  # Raised threshold for reliability
         
         votes[res['key']] += int(res['score'] * 100 * weight)
         
-        # On garde le bonus basse forte (utile partout)
         if np.mean(b_seg) > 0.38:
             votes[res['key']] += int(res['score'] * 80)
-        
-        # → ON NE MET PLUS DE BONUS INTRO ICI
         
         timeline.append({"Temps": start, "Note": res['key'], "Conf": res['score']})
 
@@ -424,12 +452,16 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     final_third_idx = (final_root_idx + third_offset) % 12
     final_fifth_idx = (final_root_idx + fifth_offset) % 12
 
+    # Added ensemble debug info
+    ensemble_debug_str = "\n".join([f"{k}: {round(np.mean(profile_scores[k]), 3)}" for k in sorted(avg_scores, key=avg_scores.get, reverse=True)[:5]])
+
     debug_info = {
         "global_bass_dominant_note": global_tonic_note,
         "global_bass_strength": round(global_bass_strength, 3),
         "intro_dominant_note": intro_tonic_note,
         "intro_strength": round(intro_strength, 3),
         "top_votes_before_adjust": debug_top_votes_str,
+        "ensemble_avg_scores_top5": ensemble_debug_str,
         "global_chroma_strongest_tonic": NOTES_LIST[np.argmax(chroma_avg)],
         "global_chroma_strongest_value": round(np.max(chroma_avg), 3),
         "final_tonic_strength": round(chroma_avg[final_root_idx], 3),
@@ -457,7 +489,8 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "ambiguous": ambiguous,
         "audio_bytes": best_audio_bytes,
         "perception_adjusted": perception_adjusted,
-        "debug_info": debug_info
+        "debug_info": debug_info,
+        "low_conf": final_conf < 80  # Added flag for low confidence
     }
 
     if TELEGRAM_TOKEN and CHAT_ID:
@@ -546,6 +579,7 @@ if uploaded_files:
                     {f"<div class='modulation-alert'>⚠️ MODULATION → {data['target_key'].upper()} ({data['target_camelot']})</div>" if data['modulation'] else ""}
                     {f"<div class='warning-ambiguous'>⚠️ AMBIGUÏTÉ POSSIBLE (4 demi-tons)</div>" if data.get('ambiguous', False) else ""}
                     {f"<div class='perception-alert'>👂 AJUSTÉ (perception / tonique)</div>" if data.get('perception_adjusted', False) else ""}
+                    {f"<div class='low-conf-alert'>⚠️ CONFIANCE FAIBLE - VÉRIFIEZ MANUELLEMENT</div>" if data.get('low_conf', False) else ""}
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -567,23 +601,26 @@ if uploaded_files:
                     if debug:
                         st.markdown(f"""
 **Note dominante basse globale** : **{debug.get('global_bass_dominant_note', '—')}** (force: {debug.get('global_bass_strength', '—')})  
-**Note dominante intro (4%)** : **{debug.get('intro_dominant_note', '—')}** (force: {debug.get('intro_strength', '—')})  
+**Note dominante intro (~4%)** : **{debug.get('intro_dominant_note', '—')}** (force: {debug.get('intro_strength', '—')})  
 
 **Top 4 votes avant ajustement** :  
 {debug.get('top_votes_before_adjust', '—')}
 
+**Scores moyens ensemble (top 5)** :  
+{debug.get('ensemble_avg_scores_top5', '—')}
+
 **Tonique la plus forte dans chroma global** : **{debug.get('global_chroma_strongest_tonic', '—')}** (valeur: {debug.get('global_chroma_strongest_value', '—')})  
 
 **Clé finale** → tonique: {round(debug.get('final_tonic_strength', 0), 3)} | tierce: {round(debug.get('final_third_strength', 0), 3)} | quinte: {round(debug.get('final_fifth_strength', 0), 3)}  
-**Score harmonique final (ton+tierce+quinte)** : **{debug.get('final_harmonic_score', '—')}**
+**Score harmonique final** : **{debug.get('final_harmonic_score', '—')}**
 
-**Scores harmoniques des candidats** :  
+**Scores harmoniques candidats** :  
 {debug.get('harmonic_scores_candidates', '—')}
 
-**Scores perception des candidats** :  
+**Scores perception candidats** :  
 {debug.get('perception_scores_candidates', '—')}
 
-**Raison de l'ajustement final** : **{debug.get('final_adjust_reason', 'Aucun ajustement')}**
+**Raison ajustement final** : **{debug.get('final_adjust_reason', 'Aucun')}**
                         """)
                     else:
                         st.info("Aucune info debug disponible.")
