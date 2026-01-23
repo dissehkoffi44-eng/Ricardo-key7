@@ -48,11 +48,11 @@ PROFILES = {
         "major": [16.8, 0.86, 12.95, 1.41, 13.49, 11.93, 1.25, 16.74, 1.56, 12.81, 1.89, 12.44],
         "minor": [18.16, 0.69, 12.99, 13.34, 1.07, 11.15, 1.38, 17.2, 13.62, 1.27, 12.79, 2.4]
     },
-    "aarden": {  # Added Aarden-Essen profile for improved major/minor discrimination
+    "aarden": {
         "major": [17.7661, 0.145624, 14.9265, 0.160186, 19.8049, 11.3587, 0.291248, 22.062, 0.145624, 8.15494, 0.232998, 18.6691],
         "minor": [18.2648, 0.737619, 14.0499, 16.8599, 0.702699, 14.5212, 0.737619, 19.8145, 5.84214, 2.68046, 2.51091, 9.84455]
     },
-    "sapp": {  # Added Sapp profile for robustness
+    "sapp": {
         "major": [2, 0, 1, 0, 2, 1, 0, 2, 0, 1, 0, 1],
         "minor": [2, 0, 1, 1, 0, 1, 0, 2, 1, 0, 0, 1]
     }
@@ -105,10 +105,9 @@ def butter_lowpass(y, sr, cutoff=180, order=4):
     return lfilter(b, a, y)
 
 def apply_sniper_filters(y, sr):
-    # Enhanced harmonic separation with higher margin for better isolation
     y_harm = librosa.effects.harmonic(y, margin=8.0)
     nyq = 0.5 * sr
-    low = 60 / nyq  # Lowered low cutoff for better bass capture
+    low = 60 / nyq
     high = 5000 / nyq
     b, a = butter(4, [low, high], btype='band')
     return lfilter(b, a, y_harm)
@@ -119,7 +118,6 @@ def get_bass_priority(y, sr):
     return np.mean(chroma_bass, axis=1)
 
 def solve_key_sniper(chroma_vector, bass_vector):
-    # Now using ensemble: collect scores from all profiles and average
     cv = (chroma_vector - chroma_vector.min()) / (chroma_vector.max() - chroma_vector.min() + 1e-6)
     bv = (bass_vector - bass_vector.min()) / (bass_vector.max() - bass_vector.min() + 1e-6)
     
@@ -152,7 +150,6 @@ def solve_key_sniper(chroma_vector, bass_vector):
                 key_name = f"{NOTES_LIST[i]} {mode}"
                 profile_scores[key_name].append(score)
     
-    # Average scores across profiles for each key
     avg_scores = {k: np.mean(v) for k, v in profile_scores.items() if v}
     if not avg_scores:
         return {"key": "Unknown", "score": 0}
@@ -160,16 +157,14 @@ def solve_key_sniper(chroma_vector, bass_vector):
     best_key = max(avg_scores, key=avg_scores.get)
     best_score = avg_scores[best_key]
     
-    # Candidate refinement for ambiguity
-    candidates = sorted(avg_scores.items(), key=lambda x: x[1], reverse=True)[:5]  # Top 5 for better ambiguity check
+    candidates = sorted(avg_scores.items(), key=lambda x: x[1], reverse=True)[:5]
     top_key, top_score = candidates[0]
     if len(candidates) >= 2:
         second_key, second_score = candidates[1]
         top_i = NOTES_LIST.index(top_key.split()[0])
         second_i = NOTES_LIST.index(second_key.split()[0])
         dist = min(abs(top_i - second_i), 12 - abs(top_i - second_i))
-        if dist in [3, 4, 9] and (second_score / top_score > 0.85):  # Enhanced check for relative/parallel
-            # Compare bass strengths
+        if dist in [3, 4, 9] and (second_score / top_score > 0.85):
             top_bv = bv[top_i]
             second_bv = bv[second_i]
             if top_bv < second_bv - 0.05:
@@ -221,20 +216,18 @@ def generate_piano_chord_audio(key_str, sr=22050, duration=2.0):
     return buf.read(), y
 
 def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
-    # Enhanced roughness calculation with critical band consideration
     stft_chord = np.abs(librosa.stft(chord_y))
     freqs = librosa.fft_frequencies(sr=sr)
     mag = np.mean(stft_chord, axis=1)
     
-    peak_idxs = np.argsort(mag)[-12:]  # More peaks for better accuracy
+    peak_idxs = np.argsort(mag)[-12:]
     chord_freqs = freqs[peak_idxs]
     
     roughness = 0.0
     for i in range(len(chord_freqs)):
         for j in range(i+1, len(chord_freqs)):
             df = abs(chord_freqs[i] - chord_freqs[j])
-            if 15 < df < 250:  # Adjusted range for human perception
-                # Weight by critical bandwidth approximation
+            if 15 < df < 250:
                 cbw = 0.25 * (chord_freqs[i] + chord_freqs[j]) / 2
                 roughness += (mag[peak_idxs[i]] * mag[peak_idxs[j]]) * (df / cbw) ** 2
     
@@ -244,7 +237,7 @@ def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
     chroma_chord_avg = np.mean(chroma_chord, axis=1)
     
     similarity = np.corrcoef(chroma_song, chroma_chord_avg)[0, 1]
-    return 0.60 * similarity + 0.40 * consonance  # Adjusted weights for better balance
+    return 0.60 * similarity + 0.40 * consonance
 
 def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     ext = file_name.split('.')[-1].lower()
@@ -267,7 +260,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         return None
 
     duration = librosa.get_duration(y=y, sr=sr)
-    if duration < 10:  # Added check for short files
+    if duration < 10:
         st.warning(f"Fichier trop court ({duration}s). Résultats potentiellement imprécis.")
     
     tuning = librosa.estimate_tuning(y=y, sr=sr)
@@ -280,7 +273,6 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     global_tonic_note = NOTES_LIST[tonic_idx_from_bass]
     global_bass_strength = np.max(bass_profile_global)
 
-    # Analyse intro conservée pour debug/affichage seulement
     intro_length = int(sr * duration * 0.04)
     intro_y = y_filt[:intro_length]
     intro_chroma = np.mean(librosa.feature.chroma_cqt(y=intro_y, sr=sr, tuning=tuning), axis=1) if len(intro_y) > 1000 else bass_profile_global
@@ -288,9 +280,9 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     intro_tonic_note = NOTES_LIST[intro_tonic_idx]
     intro_strength = np.max(intro_chroma)
 
-    step = 5  # Reduced step for finer resolution
+    step = 5
     timeline, votes = [], Counter()
-    segments = list(range(0, max(1, int(duration) - step), 1))  # Increased overlap (every 1s)
+    segments = list(range(0, max(1, int(duration) - step), 1))
     total_segments = len(segments)
     
     for idx, start in enumerate(segments):
@@ -298,27 +290,40 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
             prog = int((idx / total_segments) * 100)
             _progress_callback(prog, f"Scan : {start}s / {int(duration)}s")
 
-        # Pondération temporelle
         progress = start / duration
         if progress < 0.12:
-            weight = 0.65          # petit bonus intro
+            weight = 0.65
         elif progress > 0.88:
-            weight = 0.4           # fin très faible
+            weight = 0.4
         elif 0.20 <= progress <= 0.80:
-            weight = 1.35          # boost corps central
+            weight = 1.35
         else:
             weight = 0.9
 
         idx_start, idx_end = int(start * sr), int((start + step) * sr)
         seg = y_filt[idx_start:idx_end]
-        if len(seg) < sr * 2 or np.max(np.abs(seg)) < 0.005: continue  # Stricter silence check
+        if len(seg) < sr * 2 or np.max(np.abs(seg)) < 0.005:
+            continue
         
-        c_raw = librosa.feature.chroma_cqt(y=seg, sr=sr, tuning=tuning, n_chroma=24, bins_per_octave=36)  # Higher resolution CQT
-        c_avg = np.mean((c_raw[::2, :] + c_raw[1::2, :]) / 2, axis=1)
+        try:
+            c_raw = librosa.feature.chroma_cqt(
+                y=seg,
+                sr=sr,
+                tuning=tuning,
+                n_chroma=12,
+                bins_per_octave=36,
+                norm=2
+            )
+            c_avg = np.mean(c_raw, axis=1)
+        except Exception as e:
+            st.warning(f"Erreur chroma_cqt sur segment {start:.1f}s → ignoré : {str(e)}")
+            continue
+
         b_seg = get_bass_priority(y[idx_start:idx_end], sr)
         res = solve_key_sniper(c_avg, b_seg)
         
-        if res['score'] < 0.75: continue  # Raised threshold for reliability
+        if res['score'] < 0.75:
+            continue
         
         votes[res['key']] += int(res['score'] * 100 * weight)
         
@@ -452,8 +457,10 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
     final_third_idx = (final_root_idx + third_offset) % 12
     final_fifth_idx = (final_root_idx + fifth_offset) % 12
 
-    # Added ensemble debug info
-    ensemble_debug_str = "\n".join([f"{k}: {round(np.mean(profile_scores[k]), 3)}" for k in sorted(avg_scores, key=avg_scores.get, reverse=True)[:5]])
+    # Note : profile_scores et avg_scores ne sont pas accessibles ici
+    # → soit les rendre globaux (pas recommandé), soit supprimer cette ligne du debug
+    # Pour l'instant on laisse un placeholder
+    ensemble_debug_str = "(non disponible dans cette portée)"
 
     debug_info = {
         "global_bass_dominant_note": global_tonic_note,
@@ -490,7 +497,7 @@ def process_audio_precision(file_bytes, file_name, _progress_callback=None):
         "audio_bytes": best_audio_bytes,
         "perception_adjusted": perception_adjusted,
         "debug_info": debug_info,
-        "low_conf": final_conf < 80  # Added flag for low confidence
+        "low_conf": final_conf < 80
     }
 
     if TELEGRAM_TOKEN and CHAT_ID:
