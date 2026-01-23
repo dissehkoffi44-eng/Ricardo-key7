@@ -5,165 +5,186 @@ import requests
 import tempfile
 import os
 from pydub import AudioSegment
+import io
 
-# Définir les noms des tonalités
+# ────────────────────────────────────────────────
+# CONFIGURATION
+# ────────────────────────────────────────────────
+st.set_page_config(page_title="Music Key & Camelot Detector", page_icon="🎵", layout="wide")
+
 keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-# Profils Krumhansl-Schmuckler (major et minor)
 major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
 minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
-# Normalisation des profils
-major_profile = major_profile / np.sum(major_profile)
-minor_profile = minor_profile / np.sum(minor_profile)
+major_profile /= np.sum(major_profile)
+minor_profile /= np.sum(minor_profile)
 
-# Mapping vers la notation Camelot
 CAMELOT_MAP = {
-    'C major': '8B',   'C# major': '3B',  'D major': '10B',  'D# major': '5B',
-    'E major': '12B',  'F major': '7B',   'F# major': '2B',  'G major': '9B',
-    'G# major': '4B',  'A major': '11B',  'A# major': '6B',  'B major': '1B',
-    'C minor': '5A',   'C# minor': '12A', 'D minor': '7A',   'D# minor': '2A',
-    'E minor': '9A',   'F minor': '4A',   'F# minor': '11A', 'G minor': '6A',
-    'G# minor': '1A',  'A minor': '8A',   'A# minor': '3A',  'B minor': '10A'
+    'C major': '8B', 'C# major': '3B', 'D major': '10B', 'D# major': '5B',
+    'E major': '12B', 'F major': '7B', 'F# major': '2B', 'G major': '9B',
+    'G# major': '4B', 'A major': '11B', 'A# major': '6B', 'B major': '1B',
+    'C minor': '5A', 'C# minor': '12A', 'D minor': '7A', 'D# minor': '2A',
+    'E minor': '9A', 'F minor': '4A', 'F# minor': '11A', 'G minor': '6A',
+    'G# minor': '1A', 'A minor': '8A', 'A# minor': '3A', 'B minor': '10A'
 }
 
 def estimate_key(chroma):
     correlations = []
     for i in range(12):
-        rotated_major = np.roll(major_profile, i)
-        rotated_minor = np.roll(minor_profile, i)
-        corr_major = np.corrcoef(chroma, rotated_major)[0, 1]
-        corr_minor = np.corrcoef(chroma, rotated_minor)[0, 1]
-        correlations.append((corr_major, 'major', i))
-        correlations.append((corr_minor, 'minor', i))
-    
+        rm = np.roll(major_profile, i)
+        rn = np.roll(minor_profile, i)
+        corr_maj = np.corrcoef(chroma, rm)[0, 1]
+        corr_min = np.corrcoef(chroma, rn)[0, 1]
+        correlations.append((corr_maj, 'major', i))
+        correlations.append((corr_min, 'minor', i))
+
     best = max(correlations, key=lambda x: x[0])
-    key_index = best[2]
+    key_idx = best[2]
     scale = best[1]
     confidence = best[0]
-    
-    key_name = keys[key_index]
+
+    key_name = keys[key_idx]
     music_key = f"{key_name} {scale}"
-    camelot = CAMELOT_MAP.get(music_key, "Inconnu")
-    
+    camelot = CAMELOT_MAP.get(music_key, "??")
     return music_key, camelot, confidence
 
 
-st.title("Music Key & Camelot Detector")
+# ────────────────────────────────────────────────
+# INTERFACE
+# ────────────────────────────────────────────────
+st.title("🎵 Music Key & Camelot Detector")
+st.markdown("Détection de tonalité + notation **Camelot** — support multi-fichiers")
 
-# ────────────────────────────────────────────────
-# Gestion des secrets Telegram (recommandé pour le déploiement)
-# ────────────────────────────────────────────────
+# Secrets Telegram
 try:
     bot_token = st.secrets["TELEGRAM_BOT_TOKEN"]
-    chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-    secrets_configured = True
+    chat_id   = st.secrets["TELEGRAM_CHAT_ID"]
+    secrets_ok = True
 except KeyError:
-    bot_token = None
-    chat_id = None
-    secrets_configured = False
+    bot_token = chat_id = None
+    secrets_ok = False
 
-if not secrets_configured:
-    st.warning("Les identifiants Telegram ne sont pas configurés dans les secrets Streamlit.")
-    st.info("Pour envoyer les rapports sur Telegram, ajoutez dans .streamlit/secrets.toml ou dans les settings Streamlit Cloud :\n"
-            "TELEGRAM_BOT_TOKEN = \"votre_token\"\n"
-            "TELEGRAM_CHAT_ID = \"votre_chat_id\"")
+if not secrets_ok:
+    st.warning("Telegram non configuré → rapports non envoyés automatiquement")
+    st.info("Ajoutez dans secrets.toml ou Streamlit Cloud :\n"
+            "TELEGRAM_BOT_TOKEN = \"...\"\nTELEGRAM_CHAT_ID = \"...\"")
 
 
-uploaded_file = st.file_uploader("Déposez un fichier audio", type=["mp3", "wav", "ogg", "flac", "m4a"])
+# Upload multiple files
+uploaded_files = st.file_uploader(
+    "Déposez un ou plusieurs fichiers audio",
+    type=["mp3", "wav", "ogg", "flac", "m4a"],
+    accept_multiple_files=True
+)
 
-if uploaded_file is not None:
-    # Sauvegarde temporaire sécurisée
-    file_ext = os.path.splitext(uploaded_file.name)[1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_filename = tmp_file.name
+if uploaded_files:
+    total = len(uploaded_files)
+    progress_global = st.progress(0)
+    status_global = st.empty()
 
-    try:
-        with st.spinner("Analyse en cours (chroma + détection de tonalité)..."):
-            # Chargement audio avec gestion m4a via pydub
-            ext = os.path.splitext(tmp_filename)[1].lower()
-            if ext == '.m4a':
-                audio = AudioSegment.from_file(tmp_filename, format="m4a")
-                samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-                if audio.channels == 2:
-                    samples = samples.reshape((-1, 2)).mean(axis=1)
-                y = samples / (2**15)  # Normalisation pour 16-bit
-                sr = audio.frame_rate
-            else:
-                y, sr = librosa.load(tmp_filename, sr=None, mono=True)
+    results_container = st.container()
 
-            # Extraction des features chroma (CQT = bonne qualité)
-            chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=512)
-            chroma_mean = np.mean(chroma, axis=1)
+    for idx, file in enumerate(uploaded_files, 1):
+        progress_global.progress((idx-1)/total)
+        status_global.markdown(f"**Traitement {idx}/{total} :** {file.name}")
 
-            # Normalisation L1
-            if np.sum(chroma_mean) > 0:
-                chroma_mean = chroma_mean / np.sum(chroma_mean)
-            else:
-                chroma_mean = np.zeros_like(chroma_mean)
+        with st.status(f"Analyse → {file.name}", expanded=(idx==1)) as status:
+            status.write("Chargement audio...")
+            file_bytes = file.getvalue()
 
-            # Détection
-            music_key, camelot_key, confidence = estimate_key(chroma_mean)
+            # ─── Sauvegarde temporaire ───────────────────────────────
+            ext = os.path.splitext(file.name)[1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
 
-        # ────────────────────────────────────────────────
-        # Rapport détaillé
-        # ────────────────────────────────────────────────
-        duration_sec = librosa.get_duration(y=y, sr=sr)
-        report = f"""🎵 Rapport d'analyse tonalité
-──────────────────────────────
-Fichier : {uploaded_file.name}
-Durée   : {duration_sec//60:.0f} min {duration_sec%60:.0f} s
-Fréq.   : {sr} Hz
-
-Tonalité détectée : {music_key}
-Camelot           : {camelot_key}
-Confiance         : {confidence:.4f}
-
-Note : cet algorithme (Krumhansl-Schmuckler + chroma CQT) donne généralement 70–82 % de précision globale selon les datasets. La précision ≥94 % demande souvent un modèle entraîné (deep learning).
-
-Répartition des classes de hauteur (chroma moyenné) :
-"""
-        for i, val in enumerate(chroma_mean):
-            report += f"  {keys[i]:<3} : {val:>6.4f}\n"
-
-        st.subheader("Résultat")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"**Tonalité :** {music_key}")
-            st.markdown(f"**Camelot :** <span style='font-size:1.6em; color:#e67e22; font-weight:bold;'>{camelot_key}</span>", unsafe_allow_html=True)
-        with col2:
-            st.metric("Confiance", f"{confidence:.3f}")
-
-        st.text_area("Rapport complet", report, height=380)
-
-        # ────────────────────────────────────────────────
-        # Envoi Telegram
-        # ────────────────────────────────────────────────
-        if secrets_configured and st.button("📤 Envoyer le rapport sur Telegram"):
-            with st.spinner("Envoi en cours..."):
-                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                payload = {
-                    "chat_id": chat_id,
-                    "text": report,
-                    "parse_mode": "Markdown"
-                }
-                try:
-                    r = requests.post(url, data=payload, timeout=10)
-                    if r.status_code == 200:
-                        st.success("Message envoyé avec succès !")
-                    else:
-                        st.error(f"Échec envoi → {r.status_code} - {r.text[:200]}")
-                except Exception as e:
-                    st.error(f"Erreur réseau : {str(e)}")
-
-    except Exception as e:
-        st.error(f"Erreur pendant l'analyse : {str(e)}")
-    
-    finally:
-        # Nettoyage impératif du fichier temporaire
-        if os.path.exists(tmp_filename):
             try:
-                os.unlink(tmp_filename)
-            except:
-                pass
+                # Chargement selon format
+                if ext == '.m4a':
+                    audio = AudioSegment.from_file(tmp_path, format="m4a")
+                    samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+                    if audio.channels == 2:
+                        samples = samples.reshape(-1, 2).mean(axis=1)
+                    y = samples / 32768.0
+                    sr = audio.frame_rate
+                else:
+                    y, sr = librosa.load(tmp_path, sr=None, mono=True)
+
+                status.write("Extraction chroma CQT...")
+                chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=512)
+                chroma_mean = np.mean(chroma, axis=1)
+
+                if np.sum(chroma_mean) > 0:
+                    chroma_mean /= np.sum(chroma_mean)
+
+                status.write("Détection tonalité...")
+                key_str, camelot, conf = estimate_key(chroma_mean)
+
+                duration = librosa.get_duration(y=y, sr=sr)
+                dur_min = int(duration // 60)
+                dur_sec = int(duration % 60)
+
+                report = f"""Analyse terminée
+──────────────────────────────
+Fichier       : {file.name}
+Durée         : {dur_min:02d}:{dur_sec:02d}
+Fréquence     : {sr} Hz
+
+Tonalité      : {key_str}
+Camelot       : {camelot}
+Confiance     : {conf:.4f}
+
+Chroma moyen :
+""" + "\n".join(f"  {k:<3} : {v:.4f}" for k,v in zip(keys, chroma_mean))
+
+                status.update(label="Terminé ✓", state="complete", expanded=False)
+
+                # Affichage résultat
+                with results_container:
+                    st.markdown(f"### {file.name}")
+                    col1, col2 = st.columns([3,1])
+                    with col1:
+                        st.markdown(f"**Tonalité :** {key_str}")
+                        st.markdown(f"**Camelot :** <span style='font-size:2.2em; color:#f59e0b; font-weight:bold;'>{camelot}</span>", unsafe_allow_html=True)
+                    with col2:
+                        st.metric("Confiance", f"{conf:.3f}")
+
+                    st.text_area("Rapport détaillé", report, height=320)
+
+                    # Envoi Telegram individuel
+                    if secrets_ok:
+                        if st.button("Envoyer sur Telegram", key=f"send_{idx}_{hash(file.name)}"):
+                            with st.spinner("Envoi..."):
+                                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                                payload = {
+                                    "chat_id": chat_id,
+                                    "text": f"🎵 {file.name}\n\n{report}",
+                                    "parse_mode": "Markdown"
+                                }
+                                try:
+                                    r = requests.post(url, data=payload, timeout=12)
+                                    if r.status_code == 200:
+                                        st.success("Envoyé !")
+                                    else:
+                                        st.error(f"Erreur {r.status_code}")
+                                except Exception as e:
+                                    st.error(f"Échec envoi : {str(e)}")
+
+                    st.markdown("---")
+
+            except Exception as e:
+                status.update(label=f"Erreur : {str(e)}", state="error")
+                st.error(f"Problème avec {file.name} : {str(e)}")
+
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+
+    progress_global.progress(1.0)
+    status_global.success(f"✓ {total} fichier(s) traité(s)")
+
+st.markdown("<br><small>Note : précision ~70-85% selon les morceaux. Pour >94% → modèle deep learning recommandé.</small>", unsafe_allow_html=True)
