@@ -2,18 +2,15 @@ import streamlit as st
 import librosa
 import numpy as np
 import requests
-import tempfile
 import os
 from pydub import AudioSegment
 import io
-import wave
 from scipy.signal import butter, lfilter
-from collections import Counter
 
 st.set_page_config(page_title="Music Key & Camelot Detector", page_icon="🎵", layout="wide")
 
 # ────────────────────────────────────────────────
-# CONSTANTES & PROFILS (ensemble pour plus de précision)
+# CONSTANTES & PROFILS
 # ────────────────────────────────────────────────
 NOTES_LIST = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -72,7 +69,7 @@ def get_bass_priority(y, sr):
 
 
 # ────────────────────────────────────────────────
-# DÉTECTION TONALITÉ (ensemble + boost basse + tierce/quinte)
+# DÉTECTION TONALITÉ (version simplifiée sans perception)
 # ────────────────────────────────────────────────
 
 def solve_key_sniper(chroma_vector, bass_vector):
@@ -135,81 +132,7 @@ def solve_key_sniper(chroma_vector, bass_vector):
 
 
 # ────────────────────────────────────────────────
-# SIMULATION ACCORD PIANO & PERCEPTION
-# ────────────────────────────────────────────────
-
-def generate_piano_chord_audio(key_str, sr=22050, duration=2.0):
-    root_note, mode = key_str.split()
-    notes_freq = {
-        'C':261.63, 'C#':277.18, 'D':293.66, 'D#':311.13, 'E':329.63,
-        'F':349.23, 'F#':369.99, 'G':392.00, 'G#':415.30, 'A':440.00,
-        'A#':466.16, 'B':493.88
-    }
-
-    intervals = [0, 4, 7] if mode == 'major' else [0, 3, 7]
-    root_freq = notes_freq.get(root_note, 440.0)
-    freqs = [root_freq * (2 ** (i / 12.0)) for i in intervals]
-
-    t = np.linspace(0, duration, int(sr * duration), False)
-
-    attack, decay, sustain, release = 0.01, 0.20, 0.60, duration - 0.21
-    env = np.zeros_like(t)
-    atk_end = int(attack * sr)
-    dec_end = int((attack + decay) * sr)
-    rel_start = int((duration - release) * sr)
-
-    env[:atk_end] = np.linspace(0, 1, atk_end)
-    env[atk_end:dec_end] = np.linspace(1, sustain, dec_end - atk_end)
-    env[dec_end:rel_start] = sustain
-    env[rel_start:] = np.linspace(sustain, 0, len(env) - rel_start)
-
-    y = np.zeros_like(t)
-    for f in freqs:
-        for harm in range(1, 6):
-            amp = 1.0 / harm
-            y += amp * np.sin(2 * np.pi * f * harm * t)
-
-    y *= env
-    y = 0.5 * y / np.abs(y).max()
-    y_int = (y * 32767).astype(np.int16)
-
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
-        wf.writeframes(y_int.tobytes())
-    buf.seek(0)
-    return buf.read(), y
-
-
-def simulate_ear_perception(chord_y, song_y, sr, chroma_song):
-    stft_chord = np.abs(librosa.stft(chord_y))
-    freqs = librosa.fft_frequencies(sr=sr)
-    mag = np.mean(stft_chord, axis=1)
-
-    peak_idxs = np.argsort(mag)[-12:]
-    chord_freqs = freqs[peak_idxs]
-
-    roughness = 0.0
-    for i in range(len(chord_freqs)):
-        for j in range(i+1, len(chord_freqs)):
-            df = abs(chord_freqs[i] - chord_freqs[j])
-            if 15 < df < 250:
-                cbw = 0.25 * (chord_freqs[i] + chord_freqs[j]) / 2
-                roughness += (mag[peak_idxs[i]] * mag[peak_idxs[j]]) * (df / cbw) ** 2
-
-    consonance = 1 / (1 + roughness + 1e-6)
-
-    chroma_chord = librosa.feature.chroma_stft(y=chord_y, sr=sr, hop_length=512)
-    chroma_chord_avg = np.mean(chroma_chord, axis=1)
-
-    similarity = np.corrcoef(chroma_song, chroma_chord_avg)[0, 1]
-    return 0.60 * similarity + 0.40 * consonance
-
-
-# ────────────────────────────────────────────────
-# TRAITEMENT PRINCIPAL D'UN FICHIER
+# TRAITEMENT PRINCIPAL D'UN FICHIER (simplifié)
 # ────────────────────────────────────────────────
 
 def process_audio(file_bytes, file_name, sr_target=22050):
@@ -239,37 +162,11 @@ def process_audio(file_bytes, file_name, sr_target=22050):
     chroma_avg = np.mean(librosa.feature.chroma_cqt(y=y_filt, sr=sr, hop_length=512), axis=1)
     bass_vector = get_bass_priority(y, sr)
 
-    # Détection principale
     res = solve_key_sniper(chroma_avg, bass_vector)
-    initial_key = res["key"]
-    initial_score = res["score"]
+    key = res["key"]
+    score = res["score"]
 
-    # Simulation perceptive sur top candidats + relatif
-    candidates = [initial_key]
-    root, mode = initial_key.split()
-    rel_mode = 'minor' if mode == 'major' else 'major'
-    rel_offset = -3 if rel_mode == 'major' else 3
-    rel_idx = (NOTES_LIST.index(root) + rel_offset) % 12
-    rel_key = f"{NOTES_LIST[rel_idx]} {rel_mode}"
-    candidates.append(rel_key)
-
-    perception_scores = {}
-    best_score_perc = -1
-    best_key = initial_key
-    best_audio = None
-
-    for cand in candidates:
-        audio_bytes, chord_y = generate_piano_chord_audio(cand, sr=sr)
-        perc_score = simulate_ear_perception(chord_y, y, sr, chroma_avg)
-        perception_scores[cand] = perc_score
-
-        if perc_score > best_score_perc + 0.04:   # seuil sélectif
-            best_score_perc = perc_score
-            best_key = cand
-            best_audio = audio_bytes
-
-    # Confiance finale (moyenne pondérée + plafonnement)
-    final_conf = min(0.99, (initial_score * 0.65 + best_score_perc * 0.35))
+    final_conf = min(0.99, score)
 
     report = f"""Analyse terminée
 ──────────────────────────────
@@ -277,22 +174,18 @@ Fichier       : {file_name}
 Durée         : {int(duration // 60):02d}:{int(duration % 60):02d}
 Fréquence     : {sr} Hz
 
-Tonalité      : {best_key}
-Camelot       : {CAMELOT_MAP.get(best_key, "??")}
+Tonalité      : {key}
+Camelot       : {CAMELOT_MAP.get(key, "??")}
 Confiance     : {final_conf:.4f}
 
-Scores perception :
-""" + "\n".join(f"  {k:<12} : {v:.4f}" for k,v in sorted(perception_scores.items(), key=lambda x:x[1], reverse=True))
-
-    report += "\n\nChroma moyen :\n" + "\n".join(f"  {k:<3} : {v:.4f}" for k,v in zip(NOTES_LIST, chroma_avg))
+Chroma moyen :
+""" + "\n".join(f"  {k:<3} : {v:.4f}" for k,v in zip(NOTES_LIST, chroma_avg))
 
     return {
-        "key": best_key,
-        "camelot": CAMELOT_MAP.get(best_key, "??"),
+        "key": key,
+        "camelot": CAMELOT_MAP.get(key, "??"),
         "conf": final_conf,
-        "audio_bytes": best_audio,
-        "report": report,
-        "adjusted": best_key != initial_key
+        "report": report
     }
 
 
@@ -300,8 +193,8 @@ Scores perception :
 # INTERFACE STREAMLIT
 # ────────────────────────────────────────────────
 
-st.title("🎵 Music Key & Camelot Detector – Advanced")
-st.markdown("Multi-profils + filtrage basse + simulation perceptive des accords piano")
+st.title("🎵 Music Key & Camelot Detector")
+st.markdown("Détection de tonalité + Camelot (version simplifiée – sans simulation perceptive)")
 
 try:
     bot_token = st.secrets["TELEGRAM_BOT_TOKEN"]
@@ -332,7 +225,7 @@ if uploaded_files:
         status_global.markdown(f"**Traitement {i}/{total} →** {file.name}")
 
         with st.status(f"Analyse → {file.name}", expanded=(i==1)) as st_status:
-            st_status.write("Chargement & prétraitement...")
+            st_status.write("Chargement & analyse...")
             data = process_audio(file.getvalue(), file.name)
 
             if "error" in data:
@@ -347,13 +240,10 @@ if uploaded_files:
                 with colA:
                     st.markdown(f"**Tonalité :** {data['key']}")
                     st.markdown(f"**Camelot :** <span style='font-size:2.4em; color:#f59e0b; font-weight:bold;'>{data['camelot']}</span>", unsafe_allow_html=True)
-                    if data["adjusted"]:
-                        st.caption("→ Ajusté via simulation perceptive")
                 with colB:
                     st.metric("Confiance", f"{data['conf']:.3f}")
 
-                st.audio(data["audio_bytes"], format="audio/wav")
-                st.text_area("Rapport complet", data["report"], height=380)
+                st.text_area("Rapport complet", data["report"], height=340)
 
                 if secrets_ok:
                     if st.button("Envoyer rapport Telegram", key=f"tg_{i}_{hash(file.name)}"):
@@ -374,4 +264,4 @@ if uploaded_files:
     prog_global.progress(1.0)
     status_global.success(f"✓ {total} fichier(s) analysé(s)")
 
-st.markdown("<small>Précision améliorée grâce à l'ensemble de profils + simulation d'accords piano. ~85–94 % selon le style musical.</small>", unsafe_allow_html=True)
+st.markdown("<small>Détection basée sur profils statistiques + renforcement basse / harmonique. Précision ~80–92 % selon le style.</small>", unsafe_allow_html=True)
